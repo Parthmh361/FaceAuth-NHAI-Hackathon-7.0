@@ -1,0 +1,22 @@
+# Python Virtual Environments
+facerec310-env/
+venv/
+env/
+
+# Python Cache and Compiled Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+
+# Test Images & Output
+registered_users/
+output_detected.jpg
+*.log
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
