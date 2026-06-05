@@ -207,7 +207,6 @@ FaceAuth-NHAI-Hackathon-7.0/
 ├── benchmark_pipeline.py
 └── test_facenet.py
 │
-├── CLAUDE.md                             # Full technical context for contributors
 ├── LICENSE                               # MIT + third-party license inventory
 └── README.md                             # This file
 ```
@@ -403,7 +402,6 @@ const MODEL_NAME = 'w600k_mbf_int8.onnx';
 | [`docs/SUBMISSION.md`](docs/SUBMISSION.md) | Complete hackathon submission: all algorithms, API reference, security design, evaluation criteria mapping |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture with Mermaid diagrams, enrollment/verify/sync flow |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Performance and accuracy target tables with instrumentation guide |
-| [`CLAUDE.md`](CLAUDE.md) | Full technical context for contributors and future development |
 
 ---
 
@@ -419,7 +417,7 @@ const MODEL_NAME = 'w600k_mbf_int8.onnx';
 | **Feasibility** — no GPU / mid-range | CPU-only ONNX Runtime; tested on Snapdragon 6-series class hardware |
 | **Scalability** — sync / purge | NetInfo-driven AWS sync; idempotent DynamoDB write; 30-day auto-purge |
 | **Scalability** — growing workforce | Add users = new DB row; no retraining; cosine 1:N scan |
-| **Documentation** | This README + full `docs/` folder + `CLAUDE.md` |
+| **Documentation** | This README + full `docs/` folder |
 
 ---
 
