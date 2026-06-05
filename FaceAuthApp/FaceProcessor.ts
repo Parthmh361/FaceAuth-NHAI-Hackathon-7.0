@@ -1,5 +1,6 @@
 import RNFS from 'react-native-fs';
 import * as base64 from 'base64-js';
+import { gammaFor, buildGammaLUT } from './core/faceMath';
 
 function bilinearResize(
   src: Uint8Array,
@@ -42,20 +43,16 @@ function bilinearResize(
 }
 
 // Gamma-LUT correction for harsh outdoor / low-light conditions.
-// Only fires when mean luminance is outside the 60–190 band.
+// Only fires when mean luminance is outside the well-exposed band.
 function applyAdaptiveGamma(data: Uint8Array, n: number): void {
   let lum = 0;
   for (let i = 0; i < n; i++) {
     lum += data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114;
   }
-  const mean = lum / n;
-  if (mean >= 60 && mean <= 190) return;
+  const gamma = gammaFor(lum / n);
+  if (gamma === 1.0) return;
 
-  const gamma = Math.max(0.4, Math.min(2.5, Math.log(127.5) / Math.log(Math.max(1, mean))));
-  const lut = new Uint8Array(256);
-  for (let i = 0; i < 256; i++) {
-    lut[i] = Math.round(255 * Math.pow(i / 255, gamma));
-  }
+  const lut = buildGammaLUT(gamma);
   for (let i = 0; i < n; i++) {
     data[i * 4] = lut[data[i * 4]];
     data[i * 4 + 1] = lut[data[i * 4 + 1]];

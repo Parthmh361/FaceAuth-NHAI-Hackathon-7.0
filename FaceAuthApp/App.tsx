@@ -30,7 +30,9 @@ import RNFS from 'react-native-fs';
 import FaceDetection, { FaceDetectorOptions } from '@react-native-ml-kit/face-detection';
 import { Database } from './Database';
 import { FaceProcessor } from './FaceProcessor';
+import { SpoofDetector } from './SpoofDetector';
 import { SyncService } from './SyncService';
+import { evaluateChallenge } from './core/faceMath';
 
 const { width } = Dimensions.get('window');
 const GALLERY_IMAGE_SIZE = width / 3 - 4;
@@ -270,33 +272,24 @@ function App(): React.JSX.Element {
 
           // Phase 2 — verify the challenge
           if (!challengeCompletedRef.current) {
-            let done = false;
+            // Delegate to the pure, unit-tested state machine in core/faceMath
+            const step = evaluateChallenge(
+              challengeRef.current,
+              { leftEye, rightEye, smile, yaw },
+              { blinkClosed: blinkWasClosed.current, smileStreak: smileFrames.current },
+            );
+            blinkWasClosed.current = step.state.blinkClosed;
+            smileFrames.current = step.state.smileStreak;
+            const done = step.passed;
 
-            switch (challengeRef.current) {
-              case 'BLINK': {
-                const avgEye = (leftEye + rightEye) / 2;
-                if (avgEye < 0.15) {
-                  blinkWasClosed.current = true;
-                } else if (blinkWasClosed.current && avgEye > 0.45) {
-                  done = true;
-                  blinkWasClosed.current = false;
-                }
-                setLivenessMsg(blinkWasClosed.current ? 'Eyes closing... open them!' : 'Please BLINK 👁');
-                break;
-              }
-              case 'SMILE':
-                smileFrames.current = smile > 0.72 ? smileFrames.current + 1 : 0;
-                done = smileFrames.current >= 2;
-                setLivenessMsg('Please SMILE 😊');
-                break;
-              case 'TURN_LEFT':
-                done = yaw < -28;
-                setLivenessMsg('Turn head LEFT ↩');
-                break;
-              case 'TURN_RIGHT':
-                done = yaw > 28;
-                setLivenessMsg('Turn head RIGHT ↪');
-                break;
+            if (challengeRef.current === 'BLINK') {
+              setLivenessMsg(blinkWasClosed.current ? 'Eyes closing... open them!' : 'Please BLINK 👁');
+            } else if (challengeRef.current === 'SMILE') {
+              setLivenessMsg('Please SMILE 😊');
+            } else if (challengeRef.current === 'TURN_LEFT') {
+              setLivenessMsg('Turn head LEFT ↩');
+            } else {
+              setLivenessMsg('Turn head RIGHT ↪');
             }
 
             if (done) {
@@ -425,6 +418,17 @@ function App(): React.JSX.Element {
       }
       if (Math.abs(face.headEulerAngleY ?? 0) > 20) {
         Alert.alert('Liveness Failed', 'Please look directly at the camera.');
+        setCapturedPhoto(null);
+        return;
+      }
+
+      // Passive anti-spoofing: reject printed photos / screens before embedding
+      const spoof = await SpoofDetector.analyze(savedUri, face.frame);
+      if (!spoof.isLive) {
+        Alert.alert(
+          'Spoof Detected ❌',
+          `This looks like a photo or screen.\nReasons: ${spoof.reasons.join(', ')}`,
+        );
         setCapturedPhoto(null);
         return;
       }

@@ -1,5 +1,6 @@
 import SQLite from 'react-native-sqlite-storage';
 import CryptoJS from 'crypto-js';
+import { cosineSimilarity } from './core/faceMath';
 
 SQLite.enablePromise(true);
 
@@ -80,14 +81,7 @@ export class Database {
   }
 
   static cosineSimilarity(a: Float32Array, b: Float32Array): number {
-    let dot = 0, na = 0, nb = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      na += a[i] * a[i];
-      nb += b[i] * b[i];
-    }
-    if (na === 0 || nb === 0) return 0;
-    return dot / (Math.sqrt(na) * Math.sqrt(nb));
+    return cosineSimilarity(a, b);
   }
 
   static async authenticateUser(

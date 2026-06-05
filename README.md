@@ -148,12 +148,13 @@ npm run android
 
 ### Run on iOS
 
-iOS requires the model to be added to the Xcode bundle:
+The model is already bundled into the iOS target (`ios/FaceAuthApp/w600k_mbf.onnx`,
+registered in `project.pbxproj`), and the app loads it from the main bundle on iOS.
 
-1. Open `ios/FaceAuthApp.xcworkspace` in Xcode
-2. Drag `android/app/src/main/assets/w600k_mbf.onnx` into the project
-3. Check **"Copy items if needed"** and target **FaceAuthApp**
-4. Run `npm run ios`
+```bash
+cd ios && pod install && cd ..
+npm run ios
+```
 
 ---
 
@@ -269,10 +270,14 @@ Measured on a mid-range device (Snapdragon 6-series class, 4 GB RAM):
 
 ## 🗺️ Roadmap & Known Limitations
 
-- [ ] Add the ONNX model to the iOS Xcode bundle (code path is ready)
-- [ ] Wire `AWS_ENDPOINT` in `SyncService.ts` to a live API Gateway URL
+- [x] Add the ONNX model to the iOS Xcode bundle — **done** (registered in `project.pbxproj`)
+- [x] Passive texture anti-spoofing on top of active liveness — **done** (`SpoofDetector.ts`)
+- [x] Accuracy benchmark harness (FAR/FRR/EER) — **done** (`accuracy_benchmark.py`)
+- [x] AWS sync backend (Lambda + DynamoDB + local mock) — **done** (`aws-backend/`)
+- [x] Unit test suite for core algorithms — **done** (`__tests__/faceMath.test.ts`)
+- [ ] Wire `AWS_ENDPOINT` in `SyncService.ts` to a live API Gateway URL (or use the mock)
 - [ ] Derive AES key from device secure hardware
-- [ ] Formal accuracy benchmark on a diverse Indian face dataset
+- [ ] Run the accuracy harness on a labelled diverse Indian face dataset
 - [ ] Multi-angle enrollment template averaging for higher field accuracy
 
 > The Python scripts in the root are **research prototypes** (webcam-based) used to design the liveness algorithms now implemented in TypeScript. They do not run on-device.

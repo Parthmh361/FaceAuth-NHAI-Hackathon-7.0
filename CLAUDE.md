@@ -7,7 +7,8 @@ It authenticates field personnel on mid-range Android/iOS devices with zero netw
 When connectivity is restored it syncs attendance records to AWS and purges local data.
 
 This is a **React Native CLI project** (not Expo). It uses native C++ modules (ONNX Runtime,
-Vision Camera) and cannot run in Expo Go — it must be built natively via Android Studio / Xcode.
+Vision Camera) and cannot run in Expo Go — it must be built natively via Android Studio / Xcode,
+or compiled in the cloud with EAS Build for a QR-installable APK.
 
 ---
 
@@ -15,22 +16,31 @@ Vision Camera) and cannot run in Expo Go — it must be built natively via Andro
 
 ```
 FaceAuth-NHAI-Hackathon-7.0/
-├── FaceAuthApp/                         ← React Native mobile app
-│   ├── App.tsx                          ← Main UI, liveness state machine, ONNX init
-│   ├── FaceProcessor.ts                 ← Face crop + bilinear resize + adaptive gamma
-│   ├── Database.ts                      ← SQLite: AES-256 embeddings + attendance_log
-│   ├── SyncService.ts                   ← NetInfo-based AWS sync + purge
-│   ├── FaceAuthSDK.ts                   ← Clean API wrapper for Datalake 3.0 integration
+├── FaceAuthApp/                          # React Native mobile app
+│   ├── App.tsx                           # UI + liveness state machine + ONNX init + sync
+│   ├── core/
+│   │   └── faceMath.ts                   # PURE logic (no native imports) — unit-tested
+│   ├── FaceProcessor.ts                  # Crop → bilinear resize → adaptive gamma → tensor
+│   ├── SpoofDetector.ts                  # Passive texture anti-spoofing (sharpness/glare/brightness)
+│   ├── Database.ts                       # SQLite: AES-256 embeddings + attendance_log
+│   ├── SyncService.ts                    # NetInfo → AWS POST → mark synced → purge
+│   ├── FaceAuthSDK.ts                    # Clean API for Datalake 3.0 integration
+│   ├── __tests__/
+│   │   └── faceMath.test.ts              # 35 assertions over the core logic
 │   ├── android/app/src/main/assets/
-│   │   └── w600k_mbf.onnx               ← MobileFaceNet (13.6 MB float32)
-│   │                                       swap for w600k_mbf_int8.onnx after quantization
-│   ├── ios/FaceAuthApp/                 ← iOS bundle (add ONNX model here via Xcode)
-│   ├── package.json
-│   └── tsconfig.json
-├── quantize_model.py                    ← INT8 quantization script (13.6 MB → ~3.5 MB)
-├── blink_detection.py                   ← Python prototype (webcam, not mobile)
-├── combined_pipeline.py                 ← Python trust-score pipeline (not mobile)
-├── compare_faces.py / register_user.py  ← Python face matching utilities
+│   │   └── w600k_mbf.onnx                # MobileFaceNet model (13.6 MB)
+│   └── ios/FaceAuthApp/
+│       └── w600k_mbf.onnx                # SAME model, bundled into the iOS target
+├── accuracy_benchmark.py                 # Real FAR/FRR/EER/accuracy harness for the model
+├── quantize_model.py                     # INT8 quantization → ~3.5 MB
+├── aws-backend/                          # Sync backend (deploy or run the mock locally)
+│   ├── lambda_handler.py                 # Lambda: validate + write to DynamoDB
+│   ├── serverless.yml                    # Lambda + API Gateway + DynamoDB infra
+│   ├── mock_server.py                    # Zero-dep local endpoint for demos
+│   └── README.md
+├── *.py                                  # Python research prototypes (webcam, not mobile)
+├── LICENSE                               # MIT + third-party license inventory
+├── CLAUDE.md                             # This file
 └── README.md
 ```
 
@@ -43,174 +53,200 @@ FaceAuth-NHAI-Hackathon-7.0/
 | Camera | `react-native-vision-camera` ^4.7.3 | Photo capture only, no frame processors |
 | Face detection | `@react-native-ml-kit/face-detection` ^2.0.1 | Eye open/smile/yaw probabilities |
 | ONNX inference | `onnxruntime-react-native` ^1.19.2 | CPU-only, C++ native module |
-| Face embedding | `w600k_mbf.onnx` (MobileFaceNet) | Input: 1×3×112×112 NCHW, output: 512-d vector |
-| Image decode | `jpeg-js` + `base64-js` | Pure JS JPEG decode for crop pipeline |
-| Local DB | `react-native-sqlite-storage` ^6.0.1 | Two tables: registered_users, attendance_log |
+| Face embedding | `w600k_mbf.onnx` (MobileFaceNet) | Input `1×3×112×112` NCHW, output 512-d |
+| Image decode | `jpeg-js` + `base64-js` | Pure-JS JPEG decode for crop + spoof pipeline |
+| Local DB | `react-native-sqlite-storage` ^6.0.1 | `registered_users`, `attendance_log` |
 | Encryption | `crypto-js` ^4.2.0 | AES-256 for embeddings at rest |
 | Connectivity | `@react-native-community/netinfo` ^11.3.1 | Triggers AWS sync on network restore |
 | React Native | 0.76.9 | New Architecture compatible |
 
 ---
 
-## Key architectural decisions
+## Architecture: pure core vs. native-bound files
 
-### Face preprocessing pipeline (FaceProcessor.ts)
-Single-pass: decode JPEG → extract face crop using ML Kit bounding box → bilinear resize to
-112×112 → adaptive gamma correction for outdoor lighting → Float32 NCHW tensor [-1, 1].
+A key design decision: **all testable algorithms live in `core/faceMath.ts`**, which imports
+nothing from React Native or any native package. The native-bound files delegate to it. This
+makes the core logic runnable under plain Node/Jest with no mocks.
 
-**Critical**: The full image is NOT squeezed to 112×112. The ML Kit `face.frame` (image-space
-pixel coordinates) is used to crop first, then resize. This is what makes accuracy work.
+`core/faceMath.ts` exports:
+- `cosineSimilarity(a, b)` / `l2Normalize(v)` — embedding math (used by `Database.ts`, `FaceAuthSDK.ts`)
+- `gammaFor(mean)` / `buildGammaLUT(gamma)` — adaptive lighting (used by `FaceProcessor.ts`)
+- `spoofVerdict(sharpness, reflection, brightness)` — anti-spoof scoring (used by `SpoofDetector.ts`)
+- `evaluateChallenge(type, metrics, state)` — liveness state machine (used by `App.tsx`)
 
-### Liveness detection (App.tsx tracking loop)
-Three-phase state machine at 400ms polling (2.5 FPS):
-1. **DETECTING** — face appears, assign random challenge from {BLINK, SMILE, TURN_LEFT, TURN_RIGHT}
-2. **CHALLENGE** — verify user performed the challenge via ML Kit probabilities
+> When changing any threshold (similarity, gamma band, spoof limits, challenge cutoffs),
+> change it in `core/faceMath.ts` — the consumers and tests both read from there.
+
+---
+
+## Key implementation details
+
+### Face preprocessing (FaceProcessor.ts)
+Single pass: decode JPEG → crop the face region using ML Kit `face.frame` pixel coords (10%
+margin) → bilinear resize to 112×112 → adaptive gamma → Float32 NCHW tensor in [-1, 1].
+
+**Critical**: the full image is NOT squeezed to 112×112. Cropping to the detected face first is
+what makes recognition accuracy work. (The original submission had a bug that discarded the crop.)
+
+### Adaptive gamma (gammaFor in core/faceMath.ts)
+`gamma = ln(0.5) / ln(mean/255)`, clamped to [0.4, 2.5], applied only when mean luminance is
+outside the 60–190 band. Dark frames get gamma < 1 (brighten); bright frames get gamma > 1
+(darken). **Note:** an earlier version used `ln(127.5)/ln(mean)`, which is inverted and made
+lighting *worse* — the unit tests caught this; the formula above is the corrected one.
+
+### Active liveness — challenge/response (App.tsx + evaluateChallenge)
+Three-phase loop at 400 ms polling (2.5 FPS):
+1. **DETECTING** — face appears → assign a random challenge from {BLINK, SMILE, TURN_LEFT, TURN_RIGHT}
+2. **CHALLENGE** — `evaluateChallenge` verifies it across frames (state persisted in refs)
 3. **STABLE** — 3 consecutive aligned frames (yaw < 15°, eyes open > 0.3) → auto-capture
 
-Challenge detection thresholds:
-- BLINK: avg eye prob drops < 0.15 then rises > 0.45 (full blink cycle)
-- SMILE: `smilingProbability > 0.72` for 2 consecutive frames
-- TURN_LEFT/RIGHT: `yawAngle < -28` or `> 28` for 1 frame
+Thresholds (in `core/faceMath.ts`): BLINK = avg eye prob < 0.15 then > 0.45 (full cycle);
+SMILE = `smilingProbability > 0.72` for 2 frames; TURN = `|yaw| > 28°`.
 
-**State refs vs state**: challenge and challengeCompleted are tracked via refs inside the
-setInterval closure to avoid stale closure issues, with React state kept in sync for UI updates.
+### Passive liveness — texture anti-spoof (SpoofDetector.ts)
+Runs on the captured crop *before* ONNX, in `processFace`. Three checks (ported from
+`passive_spoof_detection.py`): variance-of-Laplacian sharpness < 80, near-white pixel fraction
+> 0.03 (screen glare), mean brightness > 195. Two or more failures ⇒ rejected as a photo/screen.
 
 ### Embedding storage (Database.ts)
-Embeddings are AES-256 encrypted with `crypto-js` before writing to SQLite.
-In production, derive the key from Android Keystore / iOS Secure Enclave.
-Current key: hardcoded constant (`ENC_KEY`) — acceptable for hackathon demo.
+Embeddings are AES-256 encrypted (`crypto-js`) before writing to SQLite, decrypted on read.
+**Production note:** derive the key from Android Keystore / iOS Secure Enclave instead of the
+hardcoded `ENC_KEY`. **If you change `ENC_KEY` or reinstall, old rows fail to decrypt — clear and re-enroll.**
 
-**If you re-install the app or change ENC_KEY, old enrolled users will fail to decrypt.
-Clear the database and re-enroll all users.**
-
-### Attendance queue + sync (SyncService.ts)
-`attendance_log` table stores: employee_id, timestamp, similarity_score, challenge, synced.
-`SyncService.start()` attaches a NetInfo listener. When `isConnected && isInternetReachable`,
-it POSTs all `synced=0` records to `AWS_ENDPOINT`, marks them `synced=1`, purges records
-older than 30 days.
-
-**Before demo**: set `AWS_ENDPOINT` in `SyncService.ts` to your actual API Gateway URL.
+### Attendance queue + sync (SyncService.ts + attendance_log)
+`attendance_log` stores employee_id, timestamp, similarity_score, challenge, synced. A NetInfo
+listener fires on `isConnected && isInternetReachable`, POSTs all `synced=0` rows to
+`AWS_ENDPOINT`, marks them synced, and purges rows older than 30 days.
+**Before any demo:** set `AWS_ENDPOINT` in `SyncService.ts` (use `aws-backend/mock_server.py` for offline demos).
 
 ### Authentication threshold
-Cosine similarity threshold: **0.60** (raised from original 0.55 to reduce false positives).
-MobileFaceNet typical operating range: 0.58–0.65 depending on lighting/demographics.
+Cosine similarity **0.60** (raised from the original 0.55). MobileFaceNet operating range
+is ~0.58–0.65 depending on lighting/demographics.
 
 ---
 
 ## How to run
 
-### Prerequisites
-- Node.js 18+
-- Android Studio (SDK 35, NDK 26.1, Build Tools 35, Java 17)
-- `ANDROID_HOME` environment variable set
-- Physical Android device (camera doesn't work on emulator)
-- USB Debugging enabled on device
-
-### First-time setup
+### Android (physical device)
 ```bash
-cd FaceAuth-NHAI-Hackathon-7.0/FaceAuthApp
-npm install          # installs all JS deps including crypto-js, netinfo
-# For iOS only:
-cd ios && pod install && cd ..
+cd FaceAuthApp
+npm install            # includes crypto-js, netinfo
+npm start              # terminal 1 — Metro
+npm run android        # terminal 2 — build & deploy (~8 min first time)
+```
+Prereqs: Node 18+, Android Studio (SDK 35, NDK 26.1, Build Tools 35, Java 17), `ANDROID_HOME` set,
+USB debugging on. Camera does not work on emulators — use a real phone.
+
+### iOS (macOS)
+The model is now bundled into the Xcode target (`ios/FaceAuthApp/w600k_mbf.onnx`, registered in
+`project.pbxproj`). App.tsx loads it from `RNFS.MainBundlePath` on iOS.
+```bash
+cd FaceAuthApp/ios && pod install && cd ..
+npm run ios
 ```
 
-### Run on Android
+### No Android Studio / no USB → EAS Build
 ```bash
-# Terminal 1
-npm start            # Metro bundler
-
-# Terminal 2
-npm run android      # Gradle build + deploy (~8 min first time, ~30s after)
+npm install -g eas-cli && eas login
+# add eas.json with a preview/apk profile, then:
+eas build --platform android --profile preview
+# scan the QR code to install the APK over Wi-Fi
 ```
-
-### Run on iOS
-iOS requires the ONNX model to be added to the Xcode bundle manually:
-1. Open `ios/FaceAuthApp.xcworkspace` in Xcode
-2. Drag `android/app/src/main/assets/w600k_mbf.onnx` into the Xcode project
-3. Ensure "Copy items if needed" and "Add to target: FaceAuthApp" are checked
-4. `npm run ios`
 
 ---
 
-## Model quantization (optional but recommended for demo)
-
-Reduces model from 13.6 MB → ~3.5 MB, 2–4× faster inference:
+## Testing
 
 ```bash
-cd FaceAuth-NHAI-Hackathon-7.0
+cd FaceAuthApp
+npm test               # runs __tests__/faceMath.test.ts (35 assertions)
+```
+The tests cover cosine similarity, L2 normalization, adaptive gamma (incl. clamping), the gamma
+LUT, the spoof verdict, and the full challenge state machine. They require no native mocks
+because they exercise `core/faceMath.ts` directly.
+
+---
+
+## Accuracy benchmark (evidence for the >95% requirement)
+
+```bash
+pip install onnxruntime numpy opencv-python
+python accuracy_benchmark.py --dataset ./dataset     # dataset/<person>/<images>
+python accuracy_benchmark.py --selftest              # pipeline smoke-test, no dataset
+```
+Reports accuracy, FAR, FRR, EER, genuine/impostor score separation, and single-core ONNX
+latency — using the exact mobile preprocessing (112×112, RGB, (x-127.5)/127.5, NCHW). Writes
+`accuracy_results.json`. The harness has been run in `--selftest` mode against the real model
+(confirms 512-d output); real metrics require a labelled face dataset.
+
+---
+
+## Model quantization (optional)
+
+```bash
 pip install onnxruntime onnx
-python quantize_model.py
+python quantize_model.py        # 13.6 MB → ~3.5 MB INT8
+# then in App.tsx: const MODEL_NAME = 'w600k_mbf_int8.onnx';
 ```
-
-Then in `App.tsx` change:
-```typescript
-const MODEL_NAME = 'w600k_mbf_int8.onnx';
-```
+**Environment note:** the `onnx` Python package fails to build on the Windows Store Python 3.13
+used here (no compiler / no compatible wheel), so quantization must be run on a normal Python
+install, CI, or Colab. The script itself is correct.
 
 ---
 
-## Authentication flow (end-to-end)
+## AWS sync backend (aws-backend/)
 
-```
-User taps "Start Face Auth"
-  → Camera polls at 400ms
-  → ML Kit detects face → random challenge assigned (BLINK / SMILE / TURN_LEFT / TURN_RIGHT)
-  → User performs challenge (verified via ML Kit probabilities)
-  → 3 stable aligned frames → auto-capture
-  → User presses Enroll or Verify
+- **Local demo:** `python aws-backend/mock_server.py`, point `AWS_ENDPOINT` at
+  `http://<laptop-ip>:8080/attendance`. Prints every batch; replies 200 so the app purges.
+- **Real deploy:** `cd aws-backend && serverless deploy` → Lambda + API Gateway + DynamoDB
+  (`nhai_attendance`, key `employee_id`+`timestamp` for idempotent retries). Paste the printed
+  endpoint into `SyncService.ts`. See `aws-backend/README.md`.
 
-ENROLL path:
-  crop+resize face → ONNX → 512-d embedding → AES-encrypt → SQLite
+---
 
-VERIFY path:
-  crop+resize face → ONNX → 512-d embedding → cosine similarity vs all enrolled
-  threshold 0.60 → match/no-match → log to attendance_log
-  → on network: SyncService posts to AWS → purge synced records
+## Datalake 3.0 integration (FaceAuthSDK.ts)
+
+```typescript
+await FaceAuthSDK.initialize(onnxSession);
+await FaceAuthSDK.enroll(imageUri, faceBounds, 'EMP-1234');
+const r = await FaceAuthSDK.authenticate(imageUri, faceBounds, 'BLINK'); // logs attendance on success
+await FaceAuthSDK.syncNow();
 ```
 
 ---
 
 ## Known limitations & TODOs
 
-- **iOS model path**: iOS build will fail until `w600k_mbf.onnx` is added to the Xcode bundle.
-  The code already handles the `RNFS.MainBundlePath` path on iOS.
-- **AES key management**: `ENC_KEY` in `Database.ts` is a hardcoded constant. Production
-  deployment must derive this from the device's secure hardware (Android Keystore / iOS SE).
-- **AWS endpoint**: `SyncService.ts` has a placeholder URL. Set it before demo.
-- **Accuracy benchmarks**: No formal accuracy benchmark against an Indian face dataset exists
-  in this repo. The MobileFaceNet w600k model achieves ~99.1% on LFW; field accuracy on
-  diverse Indian demographics under outdoor lighting is estimated at 95%+ with gamma correction.
-- **Python scripts** (`combined_pipeline.py`, etc.) are research prototypes running on webcam.
-  They do not run on the mobile device. They were used to prototype the liveness algorithms
-  that are now implemented in TypeScript in App.tsx.
+- **AES key management** — `ENC_KEY` is a hardcoded constant; move to device secure hardware for production.
+- **AWS endpoint** — `SyncService.ts` ships with a placeholder URL; set it (or use the mock) before demo.
+- **Accuracy numbers** — the harness exists and runs, but no labelled Indian-demographics dataset
+  is bundled, so the >95% figure is not yet measured in-repo. The model (w600k_mbf) scores ~99.1% on LFW.
+- **No on-device retraining/fine-tuning** on Indian demographics — gamma + good thresholds are the
+  current mitigations for lighting/skin-tone variation.
+- **Performance numbers** in README/docs are architectural estimates; replace with measured device
+  numbers from the in-app benchmark overlay after a real run.
+- **Python `*.py` prototypes** at the repo root (blink/smile/head-pose/etc.) are webcam research
+  scripts; they do not run on-device. Their logic now lives in TypeScript (`core/faceMath.ts`, `SpoofDetector.ts`).
 
 ---
 
-## Evaluation criteria mapping
-
-| Criterion | Implementation |
-|---|---|
-| Edge AI model efficiency | MobileFaceNet ONNX 13.6 MB; INT8 quantization → ~3.5 MB |
-| Liveness detection | Random challenge-response: BLINK / SMILE / TURN_LEFT / TURN_RIGHT |
-| Integration (Datalake 3.0) | `FaceAuthSDK.ts` exposes `initialize`, `enroll`, `authenticate`, `syncNow` |
-| Performance < 1 sec | Benchmark overlay in app shows per-stage timing (ML Kit / preproc / ONNX / DB) |
-| Lighting robustness | Adaptive gamma correction in `FaceProcessor.ts` |
-| Offline-to-online sync | `SyncService.ts` + `attendance_log` table with NetInfo listener |
-| Encrypted biometrics | AES-256 embeddings in SQLite via `crypto-js` |
-| Open source only | All dependencies Apache 2.0 / MIT licensed |
-
----
-
-## File change history (what was changed from the original submission)
+## File change history (vs. the original submission)
 
 | File | Change |
 |---|---|
-| `FaceProcessor.ts` | Complete rewrite: fixed crop bug, added bilinear resize, adaptive gamma |
-| `Database.ts` | Added AES-256 encryption, `attendance_log` table, sync helper methods |
-| `SyncService.ts` | New file: NetInfo listener + AWS POST + purge |
-| `FaceAuthSDK.ts` | New file: clean SDK wrapper for Datalake integration |
-| `App.tsx` | Challenge-response liveness, benchmark overlay, sync button, threshold 0.60 |
+| `core/faceMath.ts` | **New** — pure, unit-tested core (similarity, gamma, spoof, challenge) |
+| `FaceProcessor.ts` | Rewrote: fixed discarded-crop bug, bilinear resize, adaptive gamma (now via core) |
+| `SpoofDetector.ts` | **New** — passive texture anti-spoofing, wired into `processFace` |
+| `Database.ts` | AES-256 encryption, `attendance_log` table, sync helpers; similarity delegates to core |
+| `SyncService.ts` | **New** — NetInfo listener + AWS POST + purge |
+| `FaceAuthSDK.ts` | **New** — clean SDK wrapper for Datalake integration |
+| `App.tsx` | Challenge/response liveness (via core), spoof gate, benchmark overlay, sync UI, threshold 0.60 |
+| `__tests__/faceMath.test.ts` | **New** — 35 assertions; caught the inverted-gamma bug |
+| `accuracy_benchmark.py` | **New** — FAR/FRR/EER accuracy harness |
+| `aws-backend/*` | **New** — Lambda + serverless.yml + mock server + README |
+| `ios/.../project.pbxproj` | Registered `w600k_mbf.onnx` as a bundled iOS resource |
 | `package.json` | Added `crypto-js`, `@react-native-community/netinfo` |
-| `AndroidManifest.xml` | Added `ACCESS_NETWORK_STATE` permission |
-| `tsconfig.json` | Added `lib: ES2019`, `target: ES2017` override |
-| `quantize_model.py` | New file: INT8 quantization script |
+| `AndroidManifest.xml` | Added `ACCESS_NETWORK_STATE` |
+| `tsconfig.json` | `lib: ES2019`, `target: ES2017` |
+| `LICENSE` | **New** — MIT + third-party license inventory |
+| `quantize_model.py` | **New** — INT8 quantization script |
