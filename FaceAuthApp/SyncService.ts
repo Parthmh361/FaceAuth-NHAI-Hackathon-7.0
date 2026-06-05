@@ -1,10 +1,9 @@
 import NetInfo from '@react-native-community/netinfo';
 import { Database } from './Database';
 
-// Replace with your actual AWS API Gateway endpoint before demo.
-// Expected payload: POST { records: AttendanceRecord[] }
-// Expected response: 200 OK on success
-const AWS_ENDPOINT =
+// Default endpoint; overridden at runtime from persisted settings via setEndpoint().
+// Expected payload: POST { records: AttendanceRecord[] }  →  200 OK on success.
+const DEFAULT_ENDPOINT =
   'https://YOUR_API_ID.execute-api.ap-south-1.amazonaws.com/prod/attendance';
 
 export interface SyncResult {
@@ -17,6 +16,16 @@ export class SyncService {
   private static unsubscribe: (() => void) | null = null;
   private static isSyncing = false;
   private static onSyncComplete: ((r: SyncResult) => void) | null = null;
+  private static endpoint: string = DEFAULT_ENDPOINT;
+  private static lastSyncAt: number | null = null;
+
+  static setEndpoint(url: string): void {
+    if (url && url.trim()) this.endpoint = url.trim();
+  }
+
+  static getLastSyncAt(): number | null {
+    return this.lastSyncAt;
+  }
 
   /**
    * Start listening for connectivity changes.
@@ -56,9 +65,9 @@ export class SyncService {
       const records = await Database.getPendingAttendance();
       if (records.length === 0) return { synced: 0, purged: 0, errors: 0 };
 
-      console.log(`[Sync] Uploading ${records.length} pending records to AWS…`);
+      console.log(`[Sync] Uploading ${records.length} pending records to ${this.endpoint}`);
 
-      const response = await fetch(AWS_ENDPOINT, {
+      const response = await fetch(this.endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ records }),
@@ -69,6 +78,7 @@ export class SyncService {
         await Database.markSynced(ids);
         purged = await Database.purgeSyncedRecords();
         synced = ids.length;
+        this.lastSyncAt = Date.now();
         console.log(`[Sync] Synced ${synced}, purged ${purged} old records.`);
       } else {
         errors = records.length;

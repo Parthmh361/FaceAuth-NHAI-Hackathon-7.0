@@ -1,7 +1,14 @@
 {
   "extends": "@react-native/typescript-config/tsconfig.json",
   "compilerOptions": {
+    "target": "ES2017",
     "lib": ["ES2019", "DOM"],
-    "target": "ES2017"
+    "jsx": "react-native",
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true
   }
 }

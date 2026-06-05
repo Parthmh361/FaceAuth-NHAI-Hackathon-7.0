@@ -17,14 +17,33 @@ or compiled in the cloud with EAS Build for a QR-installable APK.
 ```
 FaceAuth-NHAI-Hackathon-7.0/
 ├── FaceAuthApp/                          # React Native mobile app
-│   ├── App.tsx                           # UI + liveness state machine + ONNX init + sync
+│   ├── App.tsx                           # Shell: SafeAreaProvider + AppProvider + NavigationContainer
+│   ├── context/
+│   │   └── AppContext.tsx                # Global state: ONNX init, settings, enrolled/pending counts
+│   ├── navigation/
+│   │   ├── types.ts                      # RootStackParamList, TabParamList, typed screen props
+│   │   └── RootNavigator.tsx             # NativeStack (Boot → Tabs + Enroll/Verify modals)
+│   ├── screens/
+│   │   ├── BootScreen.tsx                # Camera permission gate + ONNX init → replace('Tabs')
+│   │   ├── HomeScreen.tsx                # Dashboard: stats, Enroll/Verify CTA buttons, sync
+│   │   ├── EnrollScreen.tsx              # Multi-step: FaceCamera → form → processing → result
+│   │   ├── VerifyScreen.tsx              # FaceCamera → processing → match result + timings
+│   │   ├── HistoryScreen.tsx             # FlatList of attendance_log (pull-to-refresh syncs)
+│   │   ├── UsersScreen.tsx               # FlatList of enrolled employees + delete (Alert confirm)
+│   │   └── SettingsScreen.tsx            # Threshold, liveness, spoof, AWS endpoint, danger zone
+│   ├── components/
+│   │   ├── ui.tsx                        # Screen, Header, Card, Button, Stat, Pill, Row, ListItem…
+│   │   └── FaceCamera.tsx                # Reusable camera + challenge-response liveness component
 │   ├── core/
 │   │   └── faceMath.ts                   # PURE logic (no native imports) — unit-tested
+│   ├── services/
+│   │   └── SettingsStore.ts              # AsyncStorage: AppSettings load/save/update
 │   ├── FaceProcessor.ts                  # Crop → bilinear resize → adaptive gamma → tensor
 │   ├── SpoofDetector.ts                  # Passive texture anti-spoofing (sharpness/glare/brightness)
 │   ├── Database.ts                       # SQLite: AES-256 embeddings + attendance_log
 │   ├── SyncService.ts                    # NetInfo → AWS POST → mark synced → purge
-│   ├── FaceAuthSDK.ts                    # Clean API for Datalake 3.0 integration
+│   ├── FaceAuthSDK.ts                    # High-level SDK + Datalake 3.0 low-level API
+│   ├── theme.ts                          # Design tokens: colors, spacing, radius, font
 │   ├── __tests__/
 │   │   └── faceMath.test.ts              # 35 assertions over the core logic
 │   ├── android/app/src/main/assets/
@@ -230,23 +249,53 @@ await FaceAuthSDK.syncNow();
 
 ---
 
+## App navigation architecture
+
+```
+RootStack (NativeStackNavigator)
+├── Boot              — camera permission gate + ONNX init; replace()s to Tabs on success
+├── Tabs (BottomTabNavigator)
+│   ├── Home          — dashboard: enrolled count, pending sync, CTA buttons, sync-now
+│   ├── History       — attendance_log FlatList; pull-to-refresh triggers sync
+│   ├── Users         — enrolled employees list; delete with Alert confirm; + Enroll button
+│   └── Settings      — threshold, liveness, spoof, camera position, AWS endpoint, danger zone
+├── Enroll (modal)    — FaceCamera → identity form → enrollFromPhoto() → success/error
+└── Verify (modal)    — FaceCamera → verifyFromPhoto() → match result card + timing breakdown
+```
+
+Data flow: `AppContext` owns the ONNX session, settings, and live counts. Screens read counts
+via `useApp()` and call `FaceAuthSDK` for operations. `useFocusEffect` drives per-screen refreshes.
+
 ## File change history (vs. the original submission)
 
 | File | Change |
 |---|---|
+| `App.tsx` | **Rewritten** — clean shell: SafeAreaProvider + AppProvider + NavigationContainer |
+| `context/AppContext.tsx` | **New** — ONNX init, settings, enrolled/pending counts, sync callback |
+| `navigation/types.ts` | **New** — typed RootStackParamList, TabParamList, screen prop types |
+| `navigation/RootNavigator.tsx` | **New** — NativeStack + BottomTabs + Enroll/Verify modals |
+| `screens/BootScreen.tsx` | **New** — permission gate + init button → replace to Tabs |
+| `screens/HomeScreen.tsx` | **New** — dashboard with stats, Enroll/Verify CTA, sync button |
+| `screens/EnrollScreen.tsx` | **New** — multi-step: camera → form → SDK → result |
+| `screens/VerifyScreen.tsx` | **New** — camera → SDK match → result card with timing breakdown |
+| `screens/HistoryScreen.tsx` | **New** — attendance FlatList; pull-to-refresh syncs |
+| `screens/UsersScreen.tsx` | **New** — employee list with delete; navigates to Enroll |
+| `screens/SettingsScreen.tsx` | **New** — all AppSettings fields + danger zone |
+| `components/ui.tsx` | **New** — Screen, Header, Card, Button, Stat, Pill, Row, EmptyState |
+| `components/FaceCamera.tsx` | **New** — reusable camera + challenge-response liveness component |
+| `services/SettingsStore.ts` | **New** — AsyncStorage AppSettings with defaults |
+| `theme.ts` | **New** — design tokens (colors, spacing, radius, font) |
 | `core/faceMath.ts` | **New** — pure, unit-tested core (similarity, gamma, spoof, challenge) |
 | `FaceProcessor.ts` | Rewrote: fixed discarded-crop bug, bilinear resize, adaptive gamma (now via core) |
-| `SpoofDetector.ts` | **New** — passive texture anti-spoofing, wired into `processFace` |
+| `SpoofDetector.ts` | **New** — passive texture anti-spoofing, wired into SDK pipeline |
 | `Database.ts` | AES-256 encryption, `attendance_log` table, sync helpers; similarity delegates to core |
 | `SyncService.ts` | **New** — NetInfo listener + AWS POST + purge |
-| `FaceAuthSDK.ts` | **New** — clean SDK wrapper for Datalake integration |
-| `App.tsx` | Challenge/response liveness (via core), spoof gate, benchmark overlay, sync UI, threshold 0.60 |
+| `FaceAuthSDK.ts` | **New** — high-level enrollFromPhoto/verifyFromPhoto + Datalake low-level API |
 | `__tests__/faceMath.test.ts` | **New** — 35 assertions; caught the inverted-gamma bug |
 | `accuracy_benchmark.py` | **New** — FAR/FRR/EER accuracy harness |
 | `aws-backend/*` | **New** — Lambda + serverless.yml + mock server + README |
 | `ios/.../project.pbxproj` | Registered `w600k_mbf.onnx` as a bundled iOS resource |
-| `package.json` | Added `crypto-js`, `@react-native-community/netinfo` |
-| `AndroidManifest.xml` | Added `ACCESS_NETWORK_STATE` |
-| `tsconfig.json` | `lib: ES2019`, `target: ES2017` |
+| `package.json` | Added nav, safe-area, screens, async-storage, crypto-js, netinfo |
+| `tsconfig.json` | Added `jsx`, `moduleResolution`, `lib`, `target` explicitly |
 | `LICENSE` | **New** — MIT + third-party license inventory |
 | `quantize_model.py` | **New** — INT8 quantization script |

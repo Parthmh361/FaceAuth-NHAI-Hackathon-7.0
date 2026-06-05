@@ -51,13 +51,13 @@ When the network returns, attendance records sync to AWS and local data is purge
 ┌─────────────────────────────────────────────────────────────────┐
 │                     React Native (TypeScript)                    │
 │                                                                  │
-│   ┌────────────┐   ┌─────────────────┐   ┌───────────────────┐  │
-│   │  App.tsx   │   │ FaceProcessor.ts│   │   FaceAuthSDK.ts  │  │
-│   │ Liveness   │   │ Crop · Resize   │   │  enroll()         │  │
-│   │ State M/C  │   │ Gamma · NCHW    │   │  authenticate()   │  │
-│   └─────┬──────┘   └────────┬────────┘   └─────────┬─────────┘  │
-│         │                   │                       │            │
-└─────────┼───────────────────┼───────────────────────┼───────────┘
+│   ┌──────────────┐   ┌─────────────────┐   ┌─────────────────┐  │
+│   │  Enroll /    │   │ FaceProcessor.ts│   │  FaceAuthSDK.ts │  │
+│   │  Verify      │   │ Crop · Resize   │   │  enrollFromPhoto │  │
+│   │  Screens     │   │ Gamma · NCHW    │   │  verifyFromPhoto │  │
+│   └─────┬────────┘   └────────┬────────┘   └────────┬────────┘  │
+│         │                     │                      │           │
+└─────────┼─────────────────────┼──────────────────────┼──────────┘
           │                   │                       │
     ┌─────▼─────┐      ┌──────▼──────┐        ┌───────▼────────┐
     │  ML Kit   │      │ ONNX Runtime│        │   SQLite +     │
@@ -100,18 +100,49 @@ When the network returns, attendance records sync to AWS and local data is purge
 ```
 FaceAuth-NHAI-Hackathon-7.0/
 ├── FaceAuthApp/                          # React Native mobile app
-│   ├── App.tsx                           # UI + liveness state machine + ONNX init
-│   ├── FaceProcessor.ts                  # Crop → bilinear resize → gamma → tensor
-│   ├── Database.ts                       # SQLite: AES embeddings + attendance log
+│   ├── App.tsx                           # Shell: SafeAreaProvider + AppProvider + NavigationContainer
+│   ├── context/AppContext.tsx            # Global state: ONNX init, settings, enrolled/pending counts
+│   ├── navigation/
+│   │   ├── types.ts                      # RootStackParamList, TabParamList, typed screen props
+│   │   └── RootNavigator.tsx             # Stack (Boot → Tabs) + modal Enroll + Verify
+│   ├── screens/
+│   │   ├── BootScreen.tsx                # Camera permission + "Initialize System" → Tabs
+│   │   ├── HomeScreen.tsx                # Dashboard: counts, Enroll/Verify CTA, sync
+│   │   ├── EnrollScreen.tsx              # Camera → identity form → embed → success
+│   │   ├── VerifyScreen.tsx              # Camera → match → result card with timing breakdown
+│   │   ├── HistoryScreen.tsx             # Attendance log; pull-to-refresh syncs AWS
+│   │   ├── UsersScreen.tsx               # Enrolled employees + delete
+│   │   └── SettingsScreen.tsx            # Threshold, liveness, AWS endpoint, danger zone
+│   ├── components/
+│   │   ├── ui.tsx                        # Screen, Header, Card, Button, Stat, Pill, EmptyState…
+│   │   └── FaceCamera.tsx                # Camera + challenge-response liveness (shared by screens)
+│   ├── core/faceMath.ts                  # PURE logic — unit-tested, no native imports
+│   ├── services/SettingsStore.ts         # AsyncStorage settings persistence
+│   ├── FaceProcessor.ts                  # Crop → bilinear resize → gamma → NCHW tensor
+│   ├── Database.ts                       # SQLite: AES-256 embeddings + attendance_log
 │   ├── SyncService.ts                    # NetInfo → AWS sync → purge
-│   ├── FaceAuthSDK.ts                    # Clean API for Datalake 3.0 integration
+│   ├── FaceAuthSDK.ts                    # High-level SDK + Datalake 3.0 low-level API
+│   ├── theme.ts                          # Design tokens (colors, spacing, radius, font)
 │   └── android/app/src/main/assets/
 │       └── w600k_mbf.onnx                # MobileFaceNet model (13.6 MB)
+├── accuracy_benchmark.py                 # FAR/FRR/EER accuracy harness
 ├── quantize_model.py                     # INT8 quantization → ~3.5 MB
-├── *.py                                  # Python research prototypes (webcam)
+├── aws-backend/                          # Lambda + mock server
 ├── CLAUDE.md                             # Full technical context for contributors
 └── README.md
 ```
+
+### App screens at a glance
+
+| Screen | Role |
+|---|---|
+| **Boot** | Permission check + ONNX warm-up gate. Replaces itself with Tabs on success. |
+| **Home** | Dashboard: enrolled count, pending-sync count, Enroll / Verify CTA buttons. |
+| **Enroll** | Multi-step modal: `FaceCamera` → employee ID form → `enrollFromPhoto()` → result. |
+| **Verify** | Modal: `FaceCamera` → `verifyFromPhoto()` → identity result card with per-stage timings. |
+| **History** | Attendance log (FlatList, newest first). Pull-to-refresh triggers AWS sync. |
+| **Users** | Enrolled employees list. Tap ✕ to delete with Alert confirmation. |
+| **Settings** | Match threshold, liveness toggle, spoof toggle, camera position, AWS endpoint, danger zone. |
 
 ---
 
