@@ -20,7 +20,9 @@ import { evaluateChallenge, ChallengeType } from '../core/faceMath';
 
 const { width } = Dimensions.get('window');
 
-const CHALLENGES: ChallengeType[] = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT'];
+// SMILE is excluded: ML Kit smilingProbability is unreliable across
+// demographics/lighting in fast-poll mode. BLINK + TURN covers anti-spoof.
+const CHALLENGES: ChallengeType[] = ['BLINK', 'TURN_LEFT', 'TURN_RIGHT'];
 const PROMPTS: Record<ChallengeType, string> = {
   BLINK: 'Blink slowly — close & open', SMILE: 'Please SMILE',
   TURN_LEFT: 'Turn head LEFT', TURN_RIGHT: 'Turn head RIGHT',
@@ -30,7 +32,7 @@ const ICONS: Record<ChallengeType, IconName> = {
 };
 
 export function FaceCamera({
-  cameraPosition = 'front',
+  cameraPosition: initialPosition = 'front',
   livenessEnabled = true,
   actionLabel,
   onCapture,
@@ -42,7 +44,10 @@ export function FaceCamera({
   onCapture: (photoPath: string) => void;
   onCancel: () => void;
 }) {
-  const device = useCameraDevice(cameraPosition);
+  const [activePosition, setActivePosition] = useState<CameraPosition>(initialPosition);
+  const activePositionRef = useRef<CameraPosition>(initialPosition);
+
+  const device = useCameraDevice(activePosition);
   const cameraRef = useRef<Camera>(null);
 
   const [faceBounds, setFaceBounds] = useState<any>(null);
@@ -59,6 +64,15 @@ export function FaceCamera({
   const blinkClosed = useRef(false);
   const smileStreak = useRef(0);
   const capturedRef = useRef(false);
+
+  const flipCamera = () => {
+    const next: CameraPosition = activePositionRef.current === 'front' ? 'back' : 'front';
+    activePositionRef.current = next;
+    setActivePosition(next);
+    stable.current = 0;
+    setAligned(false);
+    setFaceBounds(null);
+  };
 
   const capture = async () => {
     if (!cameraRef.current || capturedRef.current) return;
@@ -120,7 +134,7 @@ export function FaceCamera({
         let bx = face.frame.left * scale - offX;
         const by = face.frame.top * scale - offY;
         // The front-camera preview is mirrored; flip the box to match it.
-        if (cameraPosition === 'front') bx = width - bx - bw;
+        if (activePositionRef.current === 'front') bx = width - bx - bw;
         setFaceBounds({ x: bx, y: by, width: bw, height: bh });
 
         // ML Kit exposes head pose as rotationX/Y/Z — `rotationY` is the yaw.
@@ -159,8 +173,19 @@ export function FaceCamera({
         }
 
         // Phase 3 — stable alignment → capture
+        // Check all three head-pose axes so off-axis faces (tilted up/down,
+        // rolled sideways) cannot sneak through and create divergent embeddings.
+        const pitch = face.rotationX ?? 0;
+        const roll  = face.rotationZ ?? 0;
         if (Math.abs(yaw) > 15) {
-          setMsg('Look straight ahead'); setAligned(false); stable.current = 0;
+          setMsg('Turn head straight — don\'t look sideways');
+          setAligned(false); stable.current = 0;
+        } else if (Math.abs(pitch) > 18) {
+          setMsg('Level your head — don\'t look up or down');
+          setAligned(false); stable.current = 0;
+        } else if (Math.abs(roll) > 18) {
+          setMsg('Keep your head upright — don\'t tilt');
+          setAligned(false); stable.current = 0;
         } else if (le < 0.3 || re < 0.3) {
           setMsg('Keep your eyes open'); setAligned(false); stable.current = 0;
         } else {
@@ -232,17 +257,18 @@ export function FaceCamera({
           <Text style={styles.cancelText}>Cancel</Text>
         </TouchableOpacity>
         <Text style={styles.action}>{actionLabel}</Text>
-        <View style={{ width: 60 }} />
+        <TouchableOpacity onPress={flipCamera} style={styles.flipBtn}>
+          <Icon name="cameraFlip" size={20} color="#fff" />
+          <Text style={styles.flipLabel}>
+            {activePosition === 'front' ? 'FRONT' : 'BACK'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.bottom}>
         <View style={styles.msgPill}>
           <Text style={[styles.msgText, { color: aligned ? colors.success : '#fff' }]}>{msg}</Text>
         </View>
-        <TouchableOpacity style={styles.shutter} onPress={capture}>
-          <View style={styles.shutterInner} />
-        </TouchableOpacity>
-        <Text style={styles.hint}>Auto-captures when liveness passes & you hold still</Text>
       </View>
     </View>
   );
@@ -259,6 +285,12 @@ const styles = StyleSheet.create({
   cancelBtn: { marginTop: spacing.lg, padding: spacing.md },
   cancelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   cancelText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  flipBtn: {
+    alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: spacing.sm, paddingVertical: 6,
+    backgroundColor: 'rgba(0,0,0,0.45)', borderRadius: radius.md, minWidth: 58,
+  },
+  flipLabel: { color: '#fff', fontSize: 10, fontWeight: '700', marginTop: 3, letterSpacing: 0.6 },
   challengeCard: {
     position: 'absolute', top: 150, alignSelf: 'center', alignItems: 'center',
     backgroundColor: 'rgba(0,0,0,0.82)', borderRadius: radius.xl,
@@ -274,10 +306,4 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm, borderRadius: radius.pill, marginBottom: spacing.lg,
   },
   msgText: { fontWeight: '700', fontSize: 15 },
-  shutter: {
-    width: 76, height: 76, borderRadius: 38, borderWidth: 4,
-    borderColor: '#fff', alignItems: 'center', justifyContent: 'center',
-  },
-  shutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#fff' },
-  hint: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginTop: spacing.md },
 });

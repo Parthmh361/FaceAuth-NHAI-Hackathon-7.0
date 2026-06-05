@@ -113,7 +113,7 @@ sequenceDiagram
     participant DB as SQLite (AES-256)
 
     U->>FC: Look at camera
-    FC->>FC: Active liveness challenge (blink/smile/turn)
+    FC->>FC: Active liveness challenge (blink/turn)
     FC->>SDK: prepareEnrollment(photo)  %% computed immediately at capture
     SDK->>ML: detect face (bbox, pose, eyes)
     SDK->>SDK: passive spoof gate (texture)
@@ -177,13 +177,16 @@ stateDiagram-v2
     CAPTURE --> [*]: takePhoto() → onCapture()
 ```
 
-- A random challenge is drawn from **{BLINK, SMILE, TURN_LEFT, TURN_RIGHT}** per session.
+- A random challenge is drawn from **{BLINK, TURN_LEFT, TURN_RIGHT}** per session.
 - Thresholds live in `core/faceMath.ts`:
   - **BLINK** — avg eye-open prob dips below 0.5 (closing) then rises above 0.7 (reopen). The
     band is wide because the camera polls at a few hundred ms while a blink lasts ~120 ms — we
     detect the longer *mid-blink* phase and require a reopen (a static photo can't reopen).
-  - **SMILE** — `smilingProbability > 0.6` sustained for 2 frames.
   - **TURN** — `|yaw| > 18°` in the prompted direction (`face.rotationY`).
+- **Note on SMILE:** the implementation exists in `core/faceMath.ts` but is not in the active
+  pool. ML Kit's `smilingProbability` is unreliable across demographics and lighting conditions
+  in fast-poll mode, which causes frequent false negatives. BLINK + TURN provides equally strong
+  anti-spoof coverage without the inconsistency.
 - The reopen / re-centre requirement is what defeats **printed-photo and screen** replays.
 
 ### Passive (texture) anti-spoof — secondary gate

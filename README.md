@@ -34,7 +34,7 @@ When the network returns, attendance records sync to AWS and local data is purge
 | | Feature | Description |
 |---|---|---|
 | 🔒 | **100% Offline** | Face matching, liveness, and storage run entirely on-device. No cloud calls during authentication. |
-| 👁️ | **Active Liveness** | Random challenge-response (**blink · smile · turn left · turn right**) defeats photo & screen spoofing. |
+| 👁️ | **Active Liveness** | Random challenge-response (**blink · turn left · turn right**) defeats photo & screen spoofing. |
 | 🧠 | **Lightweight Edge AI** | MobileFaceNet ONNX model — **13.6 MB**, quantizable to **~3.5 MB** (INT8). |
 | ⚡ | **Sub-Second Auth** | End-to-end recognition + liveness in **< 1 second** on mid-range hardware. |
 | 🌗 | **Lighting Robust** | Adaptive gamma correction handles harsh sunlight, low light, and shadows. |
@@ -63,7 +63,7 @@ When the network returns, attendance records sync to AWS and local data is purge
     │  ML Kit   │      │ ONNX Runtime│        │   SQLite +     │
     │  (native) │      │   (C++)     │        │   AES-256      │
     │ blink/yaw │      │ MobileFaceNet│        │  embeddings +  │
-    │ /smile    │      │ 512-d vector │        │ attendance_log │
+    │  /turn    │      │ 512-d vector │        │ attendance_log │
     └───────────┘      └─────────────┘        └───────┬────────┘
                                                        │
                                               ┌────────▼─────────┐
@@ -212,7 +212,7 @@ const MODEL_NAME = 'w600k_mbf_int8.onnx';
  ┌──────────────────────────────────────────────────────────────┐
  │  1. User taps "Start Face Auth"                              │
  │  2. ML Kit detects face → random challenge assigned         │
- │       👁 BLINK   😊 SMILE   ↩ TURN LEFT   ↪ TURN RIGHT       │
+ │             👁 BLINK   ↩ TURN LEFT   ↪ TURN RIGHT             │
  │  3. User performs challenge (verified live)                 │
  │  4. 3 stable aligned frames → auto-capture                  │
  │  5. Crop face → resize 112×112 → gamma → ONNX → 512-d vector │

@@ -10,6 +10,7 @@ export interface SyncResult {
   synced: number;
   purged: number;
   errors: number;
+  message?: string;
 }
 
 export class SyncService {
@@ -55,13 +56,32 @@ export class SyncService {
    */
   static async syncPending(): Promise<SyncResult> {
     if (this.isSyncing) return { synced: 0, purged: 0, errors: 0 };
-    this.isSyncing = true;
 
+    // Guard: refuse to attempt a fetch against the placeholder URL.
+    if (!this.endpoint || this.endpoint.includes('YOUR_API_ID')) {
+      return {
+        synced: 0, purged: 0, errors: 1,
+        message: 'AWS endpoint not configured — set it in Settings → AWS Endpoint.',
+      };
+    }
+
+    this.isSyncing = true;
     let synced = 0;
     let purged = 0;
     let errors = 0;
+    let message: string | undefined;
 
     try {
+      // Check connectivity before attempting the HTTP request so we give a
+      // clear "offline" message rather than a confusing network-error crash.
+      const netState = await NetInfo.fetch();
+      if (!netState.isConnected) {
+        return {
+          synced: 0, purged: 0, errors: 0,
+          message: 'Offline — sync will run automatically when connected.',
+        };
+      }
+
       const records = await Database.getPendingAttendance();
       if (records.length === 0) return { synced: 0, purged: 0, errors: 0 };
 
@@ -82,15 +102,17 @@ export class SyncService {
         console.log(`[Sync] Synced ${synced}, purged ${purged} old records.`);
       } else {
         errors = records.length;
+        message = `Server error (${response.status}) — check AWS endpoint.`;
         console.warn('[Sync] Server rejected upload:', response.status);
       }
-    } catch (err) {
+    } catch (err: any) {
       errors = 1;
+      message = 'Network request failed — check endpoint URL in Settings.';
       console.warn('[Sync] Network error during sync:', err);
     } finally {
       this.isSyncing = false;
     }
 
-    return { synced, purged, errors };
+    return { synced, purged, errors, message };
   }
 }

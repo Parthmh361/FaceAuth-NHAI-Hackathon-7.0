@@ -53,6 +53,13 @@ let _onnx: any = null;
 let _threshold = 0.6;
 let _spoofEnabled = true;
 
+// Duplicate-face guard uses a LOWER threshold than verification.
+// Reason: the candidate embedding comes from a potentially different angle
+// than the stored enrollment embedding. Same-person cross-angle cosine scores
+// typically fall in the 0.45–0.58 range, well below the 0.60 match threshold
+// but still clearly above different-person scores (which cluster below 0.40).
+const DUPLICATE_THRESHOLD = 0.45;
+
 const DETECT_OPTS: FaceDetectorOptions = {
   performanceMode: 'accurate',
   classificationMode: 'all',
@@ -118,10 +125,23 @@ export const FaceAuthSDK = {
       const le = face.leftEyeOpenProbability ?? 1;
       const re = face.rightEyeOpenProbability ?? 1;
       if (le < 0.2 || re < 0.2) return { ok: false, stage: 'liveness', message: 'Eyes appear closed' };
-      // `rotationY` is the yaw (ML Kit has no `headEulerAngleY`); reject only
-      // strongly off-axis faces so a near-frontal capture still enrols/verifies.
-      if (Math.abs(face.rotationY ?? 0) > 30) {
-        return { ok: false, stage: 'liveness', message: 'Look directly at the camera' };
+      // Reject any off-axis capture across all three head-pose axes.
+      // `rotationY` = yaw (left-right), `rotationX` = pitch (up-down),
+      // `rotationZ` = roll (head tilt). Thresholds are tighter than
+      // FaceCamera's live-preview check because this runs on the full-res
+      // capture that goes into the embedding — a bad angle here means a bad
+      // stored vector which will then fail to match at normal angles.
+      const faceYaw   = Math.abs(face.rotationY ?? 0);
+      const facePitch = Math.abs(face.rotationX ?? 0);
+      const faceRoll  = Math.abs(face.rotationZ ?? 0);
+      if (faceYaw > 25) {
+        return { ok: false, stage: 'liveness', message: 'Face turned too far sideways — look straight at camera' };
+      }
+      if (facePitch > 25) {
+        return { ok: false, stage: 'liveness', message: 'Face tilted up or down — look straight at camera' };
+      }
+      if (faceRoll > 25) {
+        return { ok: false, stage: 'liveness', message: 'Head tilted sideways — keep it upright' };
       }
 
       if (_spoofEnabled) {
@@ -175,9 +195,12 @@ export const FaceAuthSDK = {
   ): Promise<{ ok: true; embedding: Float32Array; timing: Timing } | PipelineFailure> {
     const r = await this._embedFromPhoto(photoPath);
     if (!r.ok) return r;
-    // Reject re-enrolling a face that already belongs to someone, so the same
-    // person can't be added twice under different IDs.
-    const existing = await Database.authenticateUser(r.embedding, _threshold);
+    // Reject re-enrolling a face that already belongs to someone.
+    // Use DUPLICATE_THRESHOLD (0.45) rather than the match threshold (0.60)
+    // so the check catches the same person captured at a different angle —
+    // cross-angle same-person scores can drop to ~0.45–0.58 which would slip
+    // past the stricter 0.60 gate.
+    const existing = await Database.authenticateUser(r.embedding, DUPLICATE_THRESHOLD);
     if (existing) {
       return {
         ok: false,

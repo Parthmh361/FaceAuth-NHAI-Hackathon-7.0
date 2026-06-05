@@ -115,7 +115,7 @@ lighting *worse* — the unit tests caught this; the formula above is the correc
 
 ### Active liveness — challenge/response (App.tsx + evaluateChallenge)
 Three-phase loop at 400 ms polling (2.5 FPS):
-1. **DETECTING** — face appears → assign a random challenge from {BLINK, SMILE, TURN_LEFT, TURN_RIGHT}
+1. **DETECTING** — face appears → assign a random challenge from {BLINK, TURN_LEFT, TURN_RIGHT}
 2. **CHALLENGE** — `evaluateChallenge` verifies it across frames (state persisted in refs)
 3. **STABLE** — 3 consecutive aligned frames (yaw < 15°, eyes open > 0.3) → auto-capture
 

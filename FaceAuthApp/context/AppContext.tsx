@@ -77,6 +77,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         spoofEnabled: loaded.spoofCheckEnabled,
         onSync: (r) => {
           if (r.synced > 0) setLastSyncMsg(`Synced ${r.synced} record(s)`);
+          else if (r.message) setLastSyncMsg(r.message);
           refresh();
         },
       });
@@ -100,7 +101,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const r = await FaceAuthSDK.syncNow();
     setLastSyncMsg(
       r.synced > 0 ? `Synced ${r.synced} record(s)` :
-      r.errors > 0 ? 'Sync failed (no network?)' : 'Nothing to sync',
+      r.message ? r.message : 'Nothing to sync',
     );
     await refresh();
     return r;

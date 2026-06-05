@@ -16,7 +16,7 @@ export type IconName =
   | 'check' | 'close' | 'plus'
   | 'checkCircle' | 'closeCircle' | 'shieldCheck'
   | 'eye' | 'smile' | 'arrowLeft' | 'arrowRight'
-  | 'person';
+  | 'person' | 'cameraFlip';
 
 export function Icon({
   name, size = 24, color = colors.text,
@@ -224,6 +224,27 @@ export function Icon({
             width: size * 0.56, height: size * 0.34, borderColor: color,
             borderWidth: t, borderTopWidth: 0,
           }} />
+        </View>
+      );
+
+    case 'cameraFlip':
+      // Two opposing arrows (→ top, ← bottom) = swap/flip glyph
+      return (
+        <View style={box}>
+          {/* top: → */}
+          <View style={[abs, bar(size * 0.52, t, { top: size * 0.28, left: size * 0.1 })]} />
+          <View style={[abs, {
+            width: size * 0.22, height: size * 0.22, top: size * 0.2, right: size * 0.12,
+            borderColor: color, borderTopWidth: t, borderRightWidth: t,
+            transform: [{ rotate: '45deg' }],
+          }]} />
+          {/* bottom: ← */}
+          <View style={[abs, bar(size * 0.52, t, { bottom: size * 0.28, right: size * 0.1 })]} />
+          <View style={[abs, {
+            width: size * 0.22, height: size * 0.22, bottom: size * 0.2, left: size * 0.12,
+            borderColor: color, borderTopWidth: t, borderRightWidth: t,
+            transform: [{ rotate: '225deg' }],
+          }]} />
         </View>
       );
 
