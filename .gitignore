@@ -27,6 +27,9 @@ image1.png
 /package-lock.json
 /package.json
 
+# Release APK (too large for Git — distributed via GitHub Releases)
+*.apk
+
 # OS generated files
 .DS_Store
 .DS_Store?

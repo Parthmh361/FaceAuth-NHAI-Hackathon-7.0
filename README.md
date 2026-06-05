@@ -19,6 +19,22 @@ Built for **NHAI Hackathon 7.0** — designed to integrate seamlessly into the D
 
 ---
 
+## 📲 Download APK
+
+> **Quick install — no build required.**
+
+| | |
+|---|---|
+| **Pre-built APK** | [`FaceAuthApp-release.apk`](https://github.com/Parthmh361/FaceAuth-NHAI-Hackathon-7.0/releases/latest) (~208 MB) |
+| **Signed with** | Debug keystore (sideload-ready for testing/demo) |
+| **Min Android** | 8.0 (API 26) |
+
+**To install:** Download the APK → transfer to your Android phone → open → enable "Install from unknown sources" when prompted → install.
+
+The APK is also available locally in the repo root as `FaceAuthApp-release.apk` after building.
+
+---
+
 ## Overview
 
 NHAI FaceAuth authenticates field personnel using **facial recognition** and **active liveness detection** entirely on-device — no internet connection required. It is engineered for **standard mid-range phones** (Android 8.0+ / iOS 12+, 3 GB RAM) operating in remote highway zones with little or no connectivity.
@@ -190,6 +206,7 @@ FaceAuth-NHAI-Hackathon-7.0/
 │   ├── BENCHMARKS.md                     # Performance and accuracy target tables
 │   └── SUBMISSION.md                     # Complete hackathon submission document
 │
+├── FaceAuthApp-release.apk               # ⬇ Pre-built release APK (~208 MB)
 ├── accuracy_benchmark.py                 # FAR / FRR / EER / accuracy harness for the ONNX model
 ├── quantize_model.py                     # INT8 dynamic quantization (13.6 MB → ~3.5 MB)
 │
@@ -229,21 +246,23 @@ FaceAuth-NHAI-Hackathon-7.0/
 
 ## Getting Started
 
-### Prerequisites
+### Option A — Install pre-built APK (fastest)
+
+1. Download [`FaceAuthApp-release.apk`](https://github.com/Parthmh361/FaceAuth-NHAI-Hackathon-7.0/releases/latest) (~208 MB)
+2. Transfer to your Android phone (USB / AirDrop / cloud storage)
+3. Open the APK → enable "Install from unknown sources" → install
+4. Launch the app, grant camera permission, and you're ready to go
+
+### Option B — Build from source
+
+#### Prerequisites
 
 - **Node.js** 18 or higher
 - **Android Studio** (SDK 35, NDK 26.1, Build Tools 35, Java 17)
 - A **physical Android device** — Android 8.0+ (camera is unavailable on emulators)
 - USB debugging enabled on the device
 
-> **No Android Studio / USB?** Use EAS Build to compile a cloud APK and sideload it via QR:
-> ```bash
-> npm install -g eas-cli && eas login
-> # add eas.json with a preview/apk profile, then:
-> eas build --platform android --profile preview
-> ```
-
-### Install & run on Android
+#### Install & run on Android
 
 ```bash
 cd FaceAuthApp
@@ -255,6 +274,14 @@ npm start
 # Terminal 2 — build and deploy to device
 npm run android
 # First build: ~8 min (NDK compilation of ONNX Runtime + Vision Camera)
+```
+
+#### Build release APK
+
+```bash
+cd FaceAuthApp/android
+./gradlew assembleRelease
+# APK output: android/app/build/outputs/apk/release/app-release.apk
 ```
 
 ### Run on iOS

@@ -893,6 +893,7 @@ FaceAuth-NHAI-Hackathon-7.0/
 │   ├── ARCHITECTURE.md                   # Detailed architecture with Mermaid diagrams
 │   ├── BENCHMARKS.md                     # Performance + accuracy target tables
 │   └── SUBMISSION.md                     # This document
+├── FaceAuthApp-release.apk               # ⬇ Pre-built release APK (~208 MB)
 ├── LICENSE                               # MIT + third-party license inventory
 ├── CLAUDE.md                             # Full technical context for contributors
 └── README.md                             # Quick-start overview
@@ -902,7 +903,21 @@ FaceAuth-NHAI-Hackathon-7.0/
 
 ## 12. Setup & Installation
 
-### Prerequisites
+### Option A — Install pre-built APK (fastest)
+
+A ready-to-install release APK is available:
+
+| | |
+|---|---|
+| **Download** | [`FaceAuthApp-release.apk`](https://github.com/Parthmh361/FaceAuth-NHAI-Hackathon-7.0/releases/latest) (~208 MB) |
+| **Signed with** | Debug keystore (sideload-ready for testing/demo) |
+| **Min Android** | 8.0 (API 26) |
+
+**Steps:** Download APK → transfer to Android phone → open → enable "Install from unknown sources" → install → launch → grant camera permission.
+
+### Option B — Build from source
+
+#### Prerequisites
 
 | Tool | Minimum version | Notes |
 |---|---|---|
@@ -911,15 +926,7 @@ FaceAuth-NHAI-Hackathon-7.0/
 | Physical Android device | Android 8.0 (API 26) | Camera does not work on emulators |
 | iOS (macOS only) | Xcode 15+, CocoaPods | iOS 12+ target |
 
-> **No physical device + no Android Studio?** Use EAS Build (cloud compilation):
-> ```bash
-> npm install -g eas-cli && eas login
-> # add eas.json with a preview/apk profile
-> eas build --platform android --profile preview
-> # scan the QR code to sideload the APK
-> ```
-
-### Android
+#### Android
 
 ```bash
 # 1. Install dependencies
@@ -933,6 +940,14 @@ npm start
 npm run android
 # First build: ~8 minutes (NDK compilation of ONNX Runtime + Vision Camera)
 # Subsequent builds: ~1–2 minutes
+```
+
+#### Build release APK
+
+```bash
+cd FaceAuthApp/android
+./gradlew assembleRelease
+# Output: android/app/build/outputs/apk/release/app-release.apk (~208 MB)
 ```
 
 ### iOS
