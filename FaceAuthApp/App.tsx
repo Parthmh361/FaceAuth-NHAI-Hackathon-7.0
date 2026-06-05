@@ -27,6 +27,7 @@ import {
   CameraPosition,
 } from 'react-native-vision-camera';
 import RNFS from 'react-native-fs';
+import ImageResizer from '@bam.tech/react-native-image-resizer';
 import FaceDetection, { FaceDetectorOptions } from '@react-native-ml-kit/face-detection';
 import { Database } from './Database';
 import { FaceProcessor } from './FaceProcessor';
@@ -378,6 +379,7 @@ function App(): React.JSX.Element {
 
     const completedChallenge = challengeRef.current ?? 'NONE';
     const t0 = Date.now();
+    let procPath: string | null = null;
 
     try {
       const fileName = `face_auth_${Date.now()}.jpg`;
@@ -386,7 +388,18 @@ function App(): React.JSX.Element {
       const savedUri = `file://${savedPath}`;
       setGallery(prev => [`file://${savedPath}`, ...prev]);
 
-      // ML Kit: liveness check on saved photo
+      // Downscale ONCE (native, fast) before any JS-side pixel work. VisionCamera
+      // photos are multi-megapixel; decoding them in pure JS blocked the single JS
+      // thread for seconds (or OOM'd) — that was the freeze. Detection, spoofing and
+      // cropping now all run on this bounded ~640px image.
+      const resized = await ImageResizer.createResizedImage(
+        savedUri, 640, 640, 'JPEG', 90, 0, undefined, false,
+        { mode: 'contain', onlyScaleDown: true },
+      );
+      const procUri = resized.uri;
+      procPath = resized.path;
+
+      // ML Kit: liveness check on the downscaled photo
       const mlT = Date.now();
       const opts: FaceDetectorOptions = {
         performanceMode: 'accurate',
@@ -394,7 +407,7 @@ function App(): React.JSX.Element {
         landmarkMode: 'none',
         contourMode: 'none',
       };
-      const faces = await FaceDetection.detect(savedUri, opts);
+      const faces = await FaceDetection.detect(procUri, opts);
       const mlKitMs = Date.now() - mlT;
 
       if (faces.length === 0) {
@@ -423,7 +436,7 @@ function App(): React.JSX.Element {
       }
 
       // Passive anti-spoofing: reject printed photos / screens before embedding
-      const spoof = await SpoofDetector.analyze(savedUri, face.frame);
+      const spoof = await SpoofDetector.analyze(procUri, face.frame);
       if (!spoof.isLive) {
         Alert.alert(
           'Spoof Detected ❌',
@@ -435,7 +448,7 @@ function App(): React.JSX.Element {
 
       // Preprocessing: crop + bilinear resize + adaptive gamma
       const prepT = Date.now();
-      const floatData = await FaceProcessor.cropResizeAndNormalize(savedUri, face.frame);
+      const floatData = await FaceProcessor.cropResizeAndNormalize(procUri, face.frame);
       const prepMs = Date.now() - prepT;
 
       // ONNX inference
@@ -484,6 +497,7 @@ function App(): React.JSX.Element {
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Processing failed');
     } finally {
+      if (procPath) RNFS.unlink(procPath).catch(() => {});
       setCapturedPhoto(null);
     }
   };
