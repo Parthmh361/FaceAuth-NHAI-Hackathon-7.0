@@ -47,11 +47,12 @@ def main():
     print(f"Original size: {src_mb:.2f} MB")
     print("Quantizing to INT8 (this takes ~30 seconds)…")
 
+    # NOTE: `optimize_model` was removed in newer onnxruntime; weight-only
+    # dynamic INT8 quantization no longer needs it.
     quantize_dynamic(
         model_input=SRC,
         model_output=DST,
         weight_type=QuantType.QInt8,
-        optimize_model=True,
     )
 
     dst_mb = os.path.getsize(DST) / 1024 / 1024

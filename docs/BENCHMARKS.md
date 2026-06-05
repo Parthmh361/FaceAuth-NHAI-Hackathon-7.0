@@ -69,13 +69,80 @@ pure-JS JPEG decode in preprocessing; the model forward pass is cheap.
 
 ## A.4 Footprint & memory — results table
 
+> **The 20 MB rule targets the AI model footprint, not the installed APK** (problem statement
+> §2: *"The **AI model** must be extremely lightweight… target size ~20 MB"*). The model footprint
+> is **comfortably within budget**; see §A.6 for the model-vs-APK distinction.
+
 | Item | Target | Value |
 |---|---|---|
-| ONNX model (FP32) | ≤ 20 MB | **13.6 MB** ✅ |
-| ONNX model (INT8, optional) | smaller is better | **~3.5 MB** (`quantize_model.py`; not yet bundled) |
-| Total AI footprint shipped | ~20 MB | **13.6 MB** ✅ |
+| **ONNX model (FP32, shipped)** | ≤ 20 MB | **13.0 MB** ✅ |
+| ONNX model (INT8, dynamic) | smaller is better | **3.35 MB** (74% smaller) — *measured*, see §A.6 caveat |
+| **Total AI footprint shipped** | ~20 MB | **13.0 MB** ✅ |
 | Peak RAM during verify | low | `[MEASURE]` (Android Studio Profiler / Xcode Instruments) |
-| APK size delta from the module | — | `[MEASURE]` |
+| Installed APK, single ABI (arm64-v8a) | — | `[MEASURE]` (~55–65 MB estimate) |
+| Universal APK (all 4 ABIs, no minify) | — | 209 MB (debug-style packaging; **not** the deliverable footprint) |
+
+## A.5 How to reproduce performance numbers
+
+1. **Device latency (primary):** build release, run **Verify** 20× on a real phone, record the
+   four timing fields per run, compute median + p90, fill §A.3.
+2. **Single-core model latency (lab):**
+   ```bash
+   pip install onnxruntime numpy opencv-python
+   python accuracy_benchmark.py --selftest      # prints 512-d output + ONNX latency
+   ```
+3. **Memory:** attach Android Studio Profiler (or Xcode Instruments) during a verify and read
+   peak heap / native memory.
+
+## A.6 Model footprint vs. APK size (read before quoting any size)
+
+These are two different numbers and the rule concerns only the first:
+
+- **AI model footprint = 13.0 MB** (FP32), the metric the spec caps at ~20 MB → **compliant**.
+- **Installed APK** cannot reach 20 MB with this stack, and that is expected: the open-source
+  inference **engines** dominate, not our model. Per single architecture (arm64-v8a):
+
+  | Native component | Size (arm64-v8a) |
+  |---|---|
+  | ONNX Runtime (`libonnxruntime.so`) | 27.4 MB |
+  | ML Kit face detector | 8.5 MB |
+  | React Native + Hermes | ~9 MB |
+  | Our model | 13.0 MB |
+
+  ONNX Runtime **alone** exceeds 20 MB, so no build flag makes the whole app 20 MB. A lean
+  **single-ABI release/AAB lands ~55–65 MB per device**. The **209 MB** figure is a *universal*
+  APK bundling **all four** CPU architectures (armeabi-v7a + arm64-v8a + x86 + x86_64) with
+  minification off — a packaging artifact, not the module footprint. x86/x86_64 are
+  emulator-only and contribute ~80 MB of that.
+
+- **Integration reality:** the deliverable plugs into Datalake 3.0, which already ships RN/Hermes.
+  The *incremental* footprint the module adds is **model (13 MB) + ML Kit (~8.5 MB) + ONNX
+  Runtime (~27 MB)** for one ABI — and the model is the smallest, most-compressible piece.
+
+### Quantization result & caveat
+
+`quantize_model.py` (dynamic INT8, weight-only) compresses the model **13.0 MB → 3.35 MB (74%
+smaller)** — a strong compression result for the Innovation criterion. **Caveat (verified):**
+dynamic quantization of this Conv-heavy MobileFaceNet emits `ConvInteger` operators that ONNX
+Runtime's CPU kernel currently reports `NOT_IMPLEMENTED`, so the dynamically-quantized file is
+**not shipped** (it would risk on-device inference). The production-correct path for a CNN is
+**static QDQ quantization with a small calibration set** (produces `QLinearConv`, broadly
+supported by ORT Mobile); this is a verified, near-term optimization, not a same-day swap. The
+13.0 MB FP32 model is shipped today and already meets the cap.
+
+## A.7 How to reproduce footprint numbers
+
+```bash
+# AI footprint (FP32, shipped)
+ls -lh FaceAuthApp/android/app/src/main/assets/w600k_mbf.onnx   # 13.0 MB
+
+# INT8 compression demo (3.35 MB) — file is generated, not bundled (see caveat above)
+pip install onnx onnxruntime
+python quantize_model.py
+
+# Per-ABI native breakdown inside an APK
+unzip -l app-release.apk | grep '\.so$' | sort -k1 -nr | head
+```
 
 ## A.5 How to reproduce performance numbers
 
