@@ -10,6 +10,30 @@ const DB_NAME = 'NHAI_FaceAuth.db';
 // For the hackathon demo this constant key demonstrates AES-256 storage at rest.
 const ENC_KEY = 'NHAI-FaceAuth-AES256-OfflineKey-2024';
 
+// Derive a fixed 256-bit key from the passphrase. We use an explicit key + IV
+// (CryptoJS AES-256-CBC) instead of passphrase mode on purpose: passphrase mode
+// asks crypto-js for a random salt, and crypto-js 4.x throws
+// "Native crypto module could not be used to get secure random number" under
+// Hermes (no native CSPRNG). A per-record IV derived from the plaintext keeps
+// ciphertexts unique without needing any RNG, so encryption works fully offline.
+const AES_KEY = CryptoJS.SHA256(ENC_KEY);
+
+function encryptEmbedding(plain: string): string {
+  const iv = CryptoJS.lib.WordArray.create(CryptoJS.SHA256(plain).words.slice(0, 4), 16);
+  const enc = CryptoJS.AES.encrypt(plain, AES_KEY, { iv });
+  return iv.toString(CryptoJS.enc.Hex) + ':' + enc.ciphertext.toString(CryptoJS.enc.Base64);
+}
+
+function decryptEmbedding(stored: string): string {
+  const sep = stored.indexOf(':');
+  if (sep === -1) return ''; // unknown/legacy format — skip
+  const iv = CryptoJS.enc.Hex.parse(stored.slice(0, sep));
+  const params = CryptoJS.lib.CipherParams.create({
+    ciphertext: CryptoJS.enc.Base64.parse(stored.slice(sep + 1)),
+  });
+  return CryptoJS.AES.decrypt(params, AES_KEY, { iv }).toString(CryptoJS.enc.Utf8);
+}
+
 export interface Employee {
   employeeId: string;
   name: string;
@@ -71,6 +95,22 @@ export class Database {
         synced INTEGER NOT NULL DEFAULT 0
       );
     `);
+
+    // Migrate DBs created by an earlier schema. CREATE TABLE IF NOT EXISTS does
+    // NOT add columns to a pre-existing table, so older installs are missing
+    // newer columns (e.g. employee_name) — add them in place.
+    await this.ensureColumn('attendance_log', 'employee_name', 'TEXT');
+    await this.ensureColumn('attendance_log', 'challenge', "TEXT NOT NULL DEFAULT 'NONE'");
+    await this.ensureColumn('attendance_log', 'synced', 'INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /** Add a column if it isn't already present (lightweight forward migration). */
+  private static async ensureColumn(table: string, column: string, decl: string): Promise<void> {
+    const [info] = await this.db!.executeSql(`PRAGMA table_info(${table})`);
+    for (let i = 0; i < info.rows.length; i++) {
+      if (info.rows.item(i).name === column) return; // already there
+    }
+    await this.db!.executeSql(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
   }
 
   // ─── Employees (AES-256 encrypted embeddings) ────────────────
@@ -82,10 +122,7 @@ export class Database {
     embedding: Float32Array,
   ): Promise<void> {
     if (!this.db) await this.initDB();
-    const cipher = CryptoJS.AES.encrypt(
-      JSON.stringify(Array.from(embedding)),
-      ENC_KEY,
-    ).toString();
+    const cipher = encryptEmbedding(JSON.stringify(Array.from(embedding)));
     await this.db!.executeSql(
       `INSERT OR REPLACE INTO employees (employee_id, name, designation, embedding, enrolled_at)
        VALUES (?, ?, ?, ?, ?)`,
@@ -105,9 +142,7 @@ export class Database {
     for (let i = 0; i < res.rows.length; i++) {
       const row = res.rows.item(i);
       try {
-        const arr: number[] = JSON.parse(
-          CryptoJS.AES.decrypt(row.embedding, ENC_KEY).toString(CryptoJS.enc.Utf8),
-        );
+        const arr: number[] = JSON.parse(decryptEmbedding(row.embedding));
         out.push({
           employeeId: row.employee_id,
           name: row.name ?? row.employee_id,

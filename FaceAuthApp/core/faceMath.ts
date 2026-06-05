@@ -58,9 +58,9 @@ export function buildGammaLUT(gamma: number): Uint8Array {
 }
 
 // ── Passive anti-spoofing verdict ───────────────────────────────────
-export const SHARPNESS_MIN = 80;
-export const REFLECTION_MAX = 0.03;
-export const BRIGHTNESS_MAX = 195;
+export const SHARPNESS_MIN = 80;    // variance-of-Laplacian below this ⇒ soft (photo/screen)
+export const REFLECTION_MAX = 0.05; // fraction of near-white pixels (screen/print glare)
+export const BRIGHTNESS_MAX = 225;  // mean luminance; sunlight is legitimately bright
 
 export interface SpoofVerdict {
   isLive: boolean;
@@ -68,27 +68,57 @@ export interface SpoofVerdict {
   reasons: string[];
 }
 
+/**
+ * Passive (texture) liveness verdict.
+ *
+ * The primary, most reliable cue is **texture sharpness**: a live face carries
+ * real skin micro-texture (high variance-of-Laplacian), whereas a printed photo
+ * or phone/laptop screen is comparatively soft. Brightness and glare are weaker,
+ * environment-dependent signals — on their own they fire on a genuine face in
+ * **harsh sunlight** (bright + specular skin highlights), which previously caused
+ * false "spoof" rejections.
+ *
+ * So we gate on sharpness: a frame is only judged a spoof when it is BOTH soft
+ * AND shows a screen/print artefact (glare or over-bright). A sharp face is
+ * always treated as live regardless of lighting. The active challenge-response
+ * (blink/smile/turn) remains the strong anti-spoof layer; this is a cheap
+ * corroborating gate that must not punish real outdoor conditions.
+ */
 export function spoofVerdict(
   sharpness: number,
   reflection: number,
   brightness: number,
 ): SpoofVerdict {
-  let spoofScore = 0;
+  const soft = sharpness < SHARPNESS_MIN;
+  const glare = reflection > REFLECTION_MAX;
+  const bright = brightness > BRIGHTNESS_MAX;
+
   const reasons: string[] = [];
-  if (sharpness < SHARPNESS_MIN) { spoofScore++; reasons.push('low texture sharpness'); }
-  if (reflection > REFLECTION_MAX) { spoofScore++; reasons.push('screen glare detected'); }
-  if (brightness > BRIGHTNESS_MAX) { spoofScore++; reasons.push('abnormal brightness'); }
-  return { isLive: spoofScore < 2, spoofScore, reasons };
+  if (soft) reasons.push('low texture sharpness');
+  if (glare) reasons.push('screen glare detected');
+  if (bright) reasons.push('abnormal brightness');
+
+  const spoofScore = (soft ? 1 : 0) + (glare ? 1 : 0) + (bright ? 1 : 0);
+  // Spoof only when the texture is soft AND a screen/print artefact corroborates.
+  const isLive = !(soft && (glare || bright));
+  return { isLive, spoofScore, reasons };
 }
 
 // ── Challenge-response liveness state machine ───────────────────────
 export type ChallengeType = 'BLINK' | 'SMILE' | 'TURN_LEFT' | 'TURN_RIGHT';
 
-export const BLINK_CLOSED = 0.15;
-export const BLINK_OPEN = 0.45;
-export const SMILE_MIN = 0.72;
-export const SMILE_STREAK = 2;
-export const TURN_YAW = 28;
+// Tuned for a low frame-rate (≈2.5 FPS) photo-polling loop on mid-range phones.
+// A real blink/turn only shows up in 1–2 sampled frames, so the bands are wide
+// enough to be caught reliably without being so loose they trigger by accident.
+// A blink is only ~100-150ms, but the camera polls every few hundred ms, so the
+// fully-closed instant is usually missed. We therefore treat a *partially*
+// closed eyelid as "closing" (catches the much longer mid-blink phase) and then
+// require it to reopen — the reopen is what proves a live blink vs. a photo.
+export const BLINK_CLOSED = 0.5;  // avg eye-open prob below this ⇒ eyes closing
+export const BLINK_OPEN = 0.7;    // …then back above this ⇒ a full blink cycle
+export const SMILE_MIN = 0.6;     // ML Kit smile prob (robust across lighting/age)
+export const SMILE_STREAK = 2;    // sustained for 2 frames to reject a flicker
+export const TURN_YAW = 18;       // |yaw°| past this ⇒ a deliberate head turn
 
 export interface FaceMetrics {
   leftEye: number;

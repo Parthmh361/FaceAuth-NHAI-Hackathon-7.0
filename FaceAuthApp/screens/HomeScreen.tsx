@@ -3,6 +3,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Screen, Header, Card, Button, Stat, Row, Pill } from '../components/ui';
+import { Icon } from '../components/Icon';
 import { colors, spacing, radius, font } from '../theme';
 import { useApp } from '../context/AppContext';
 import type { RootStackParamList } from '../navigation/types';
@@ -59,7 +60,7 @@ export function HomeScreen() {
           style={[styles.actionBtn, { backgroundColor: colors.primary }]}
           onPress={() => navigation.navigate('Enroll')}
           activeOpacity={0.85}>
-          <Text style={styles.actionIcon}>👤</Text>
+          <View style={styles.actionIcon}><Icon name="enroll" size={34} color="#fff" /></View>
           <Text style={styles.actionLabel}>Enroll Employee</Text>
           <Text style={styles.actionSub}>Register new face profile</Text>
         </TouchableOpacity>
@@ -68,7 +69,7 @@ export function HomeScreen() {
           style={[styles.actionBtn, { backgroundColor: colors.success }]}
           onPress={() => navigation.navigate('Verify')}
           activeOpacity={0.85}>
-          <Text style={styles.actionIcon}>✅</Text>
+          <View style={styles.actionIcon}><Icon name="verify" size={34} color="#fff" /></View>
           <Text style={styles.actionLabel}>Verify & Check-In</Text>
           <Text style={styles.actionSub}>Identify + log attendance</Text>
         </TouchableOpacity>
@@ -103,7 +104,7 @@ const styles = StyleSheet.create({
     padding: spacing.xl,
     alignItems: 'center',
   },
-  actionIcon: { fontSize: 36, marginBottom: spacing.sm },
+  actionIcon: { marginBottom: spacing.sm },
   actionLabel: { fontSize: 18, fontWeight: '800', color: '#fff' },
   actionSub: { fontSize: 13, color: 'rgba(255,255,255,0.75)', marginTop: 4 },
 });

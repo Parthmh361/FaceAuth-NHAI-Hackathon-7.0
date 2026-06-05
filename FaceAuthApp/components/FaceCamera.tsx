@@ -8,24 +8,25 @@
  * the returned photo path and hands it to FaceAuthSDK.
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Dimensions, Platform, StatusBar } from 'react-native';
 import {
   Camera, useCameraDevice, CameraPosition,
 } from 'react-native-vision-camera';
 import RNFS from 'react-native-fs';
 import FaceDetection from '@react-native-ml-kit/face-detection';
 import { colors, radius, spacing } from '../theme';
+import { Icon, IconName } from './Icon';
 import { evaluateChallenge, ChallengeType } from '../core/faceMath';
 
 const { width } = Dimensions.get('window');
 
 const CHALLENGES: ChallengeType[] = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT'];
 const PROMPTS: Record<ChallengeType, string> = {
-  BLINK: 'Please BLINK', SMILE: 'Please SMILE',
+  BLINK: 'Blink slowly — close & open', SMILE: 'Please SMILE',
   TURN_LEFT: 'Turn head LEFT', TURN_RIGHT: 'Turn head RIGHT',
 };
-const ICONS: Record<ChallengeType, string> = {
-  BLINK: '👁', SMILE: '😊', TURN_LEFT: '↩', TURN_RIGHT: '↪',
+const ICONS: Record<ChallengeType, IconName> = {
+  BLINK: 'eye', SMILE: 'smile', TURN_LEFT: 'arrowLeft', TURN_RIGHT: 'arrowRight',
 };
 
 export function FaceCamera({
@@ -62,9 +63,15 @@ export function FaceCamera({
   const capture = async () => {
     if (!cameraRef.current || capturedRef.current) return;
     capturedRef.current = true;
-    setCaptured(true);
     try {
-      const photo = await cameraRef.current.takePhoto({ flash: 'off' });
+      // Take the photo while the camera is STILL active. Deactivating the
+      // camera (isActive=false) before takePhoto() resolves makes the promise
+      // hang forever — that was the post-capture freeze.
+      const photo = await cameraRef.current.takePhoto({
+        flash: 'off',
+        enableShutterSound: false,
+      });
+      setCaptured(true);
       onCapture(photo.path);
     } catch {
       capturedRef.current = false;
@@ -81,7 +88,10 @@ export function FaceCamera({
       busy.current = true;
       let tmp = '';
       try {
-        const photo = await cameraRef.current.takePhoto({ flash: 'off' });
+        const photo = await cameraRef.current.takePhoto({
+          flash: 'off',
+          enableShutterSound: false,
+        });
         tmp = photo.path;
         const faces = await FaceDetection.detect(`file://${photo.path}`, {
           classificationMode: 'all', contourMode: 'none',
@@ -97,17 +107,29 @@ export function FaceCamera({
 
         const face = faces[0];
         const screenH = Dimensions.get('window').height;
-        const scale = Math.max(width / photo.width, screenH / photo.height);
-        const offX = (photo.width * scale - width) / 2;
-        const offY = (photo.height * scale - screenH) / 2;
-        setFaceBounds({
-          x: face.frame.left * scale - offX, y: face.frame.top * scale - offY,
-          width: face.frame.width * scale, height: face.frame.height * scale,
-        });
+        // ML Kit returns coordinates in the upright (EXIF-corrected) image, but
+        // takePhoto() reports dimensions in the sensor's native orientation
+        // (landscape on most phones). Normalise to the upright portrait frame.
+        const imgW = Math.min(photo.width, photo.height);
+        const imgH = Math.max(photo.width, photo.height);
+        const scale = Math.max(width / imgW, screenH / imgH);
+        const offX = (imgW * scale - width) / 2;
+        const offY = (imgH * scale - screenH) / 2;
+        const bw = face.frame.width * scale;
+        const bh = face.frame.height * scale;
+        let bx = face.frame.left * scale - offX;
+        const by = face.frame.top * scale - offY;
+        // The front-camera preview is mirrored; flip the box to match it.
+        if (cameraPosition === 'front') bx = width - bx - bw;
+        setFaceBounds({ x: bx, y: by, width: bw, height: bh });
 
-        const yaw = face.yawAngle ?? 0;
-        const le = face.leftEyeOpenProbability ?? 0;
-        const re = face.rightEyeOpenProbability ?? 0;
+        // ML Kit exposes head pose as rotationX/Y/Z — `rotationY` is the yaw.
+        // (The old code read `face.yawAngle`, which doesn't exist, so yaw was
+        // always 0 and the TURN challenges could never pass.) `rotationY` already
+        // matches the mirrored front-camera preview, so no sign flip is needed.
+        const yaw = face.rotationY ?? 0;
+        const le = face.leftEyeOpenProbability ?? 1;
+        const re = face.rightEyeOpenProbability ?? 1;
         const smile = face.smilingProbability ?? 0;
 
         // Phase 1 — assign a random challenge
@@ -152,7 +174,9 @@ export function FaceCamera({
         if (tmp) RNFS.unlink(tmp).catch(() => {});
         busy.current = false;
       }
-    }, 400);
+      // Poll as fast as the capture pipeline allows (the `busy` guard prevents
+      // overlap). A shorter interval improves the chance of sampling a blink.
+    }, 200);
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -171,9 +195,11 @@ export function FaceCamera({
 
   return (
     <View style={StyleSheet.absoluteFill}>
+      <StatusBar barStyle="light-content" backgroundColor="#000" />
       <Camera
         ref={cameraRef} style={StyleSheet.absoluteFill}
         device={device} isActive={!captured} photo
+        photoQualityBalance="speed"
       />
 
       {faceBounds && (
@@ -188,20 +214,23 @@ export function FaceCamera({
       {/* Challenge card */}
       {livenessEnabled && challenge && !challengeDone && (
         <View style={styles.challengeCard}>
-          <Text style={styles.challengeIcon}>{ICONS[challenge]}</Text>
+          <View style={styles.challengeIcon}><Icon name={ICONS[challenge]} size={32} color={colors.accent} /></View>
           <Text style={styles.challengeText}>{PROMPTS[challenge]}</Text>
         </View>
       )}
       {challengeDone && (
         <View style={[styles.challengeCard, { backgroundColor: colors.success + 'E0', borderColor: colors.success }]}>
-          <Text style={styles.challengeIcon}>✅</Text>
+          <View style={styles.challengeIcon}><Icon name="check" size={30} color="#fff" /></View>
           <Text style={[styles.challengeText, { color: '#fff' }]}>Liveness verified</Text>
         </View>
       )}
 
       {/* Status + controls */}
       <View style={styles.topBar}>
-        <TouchableOpacity onPress={onCancel}><Text style={styles.cancelText}>✕ Cancel</Text></TouchableOpacity>
+        <TouchableOpacity onPress={onCancel} style={styles.cancelRow}>
+          <Icon name="close" size={15} color="#fff" />
+          <Text style={styles.cancelText}>Cancel</Text>
+        </TouchableOpacity>
         <Text style={styles.action}>{actionLabel}</Text>
         <View style={{ width: 60 }} />
       </View>
@@ -228,6 +257,7 @@ const styles = StyleSheet.create({
   },
   action: { color: '#fff', fontSize: 16, fontWeight: '700' },
   cancelBtn: { marginTop: spacing.lg, padding: spacing.md },
+  cancelRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   cancelText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   challengeCard: {
     position: 'absolute', top: 150, alignSelf: 'center', alignItems: 'center',

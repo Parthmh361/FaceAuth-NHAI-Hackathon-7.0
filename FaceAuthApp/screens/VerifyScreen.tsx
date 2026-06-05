@@ -4,6 +4,7 @@ import { FaceCamera } from '../components/FaceCamera';
 import { FaceAuthSDK } from '../FaceAuthSDK';
 import type { VerifySuccess } from '../FaceAuthSDK';
 import { Card, Button, Pill } from '../components/ui';
+import { Icon } from '../components/Icon';
 import { colors, spacing, font } from '../theme';
 import { useApp } from '../context/AppContext';
 import type { RootStackScreenProps } from '../navigation/types';
@@ -27,13 +28,18 @@ export function VerifyScreen({ navigation }: RootStackScreenProps<'Verify'>) {
 
   const handleCapture = async (photoPath: string) => {
     setPhase('processing');
-    const r = await FaceAuthSDK.verifyFromPhoto(photoPath, 'CHALLENGE');
-    if (r.ok) {
-      setResult(r);
-      await refresh();
-      setPhase('result');
-    } else {
-      setErrMsg(r.message);
+    try {
+      const r = await FaceAuthSDK.verifyFromPhoto(photoPath, 'CHALLENGE');
+      if (r.ok) {
+        setResult(r);
+        await refresh();
+        setPhase('result');
+      } else {
+        setErrMsg(r.message);
+        setPhase('error');
+      }
+    } catch (e: any) {
+      setErrMsg(e?.message ?? 'Verification failed unexpectedly.');
       setPhase('error');
     }
   };
@@ -67,7 +73,7 @@ export function VerifyScreen({ navigation }: RootStackScreenProps<'Verify'>) {
 
     return (
       <View style={styles.center}>
-        <Text style={styles.bigIcon}>✅</Text>
+        <View style={styles.bigIcon}><Icon name="checkCircle" size={72} color={colors.success} /></View>
 
         <Card style={styles.resultCard}>
           <Text style={[font.h2, styles.centered, { marginBottom: spacing.xs }]}>
@@ -114,7 +120,7 @@ export function VerifyScreen({ navigation }: RootStackScreenProps<'Verify'>) {
   // error
   return (
     <View style={styles.center}>
-      <Text style={styles.bigIcon}>❌</Text>
+      <View style={styles.bigIcon}><Icon name="closeCircle" size={72} color={colors.danger} /></View>
       <Card style={styles.resultCard}>
         <Text style={[font.h3, styles.centered, { color: colors.danger, marginBottom: spacing.sm }]}>
           Verification Failed

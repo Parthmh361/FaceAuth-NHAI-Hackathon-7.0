@@ -5,19 +5,19 @@
  */
 
 export const colors = {
-  bg: '#0B0E14',
-  surface: '#141925',
-  surfaceAlt: '#1C2230',
-  border: '#2A3242',
-  primary: '#4F8CFF',
-  primaryDark: '#3A6FD8',
-  success: '#30D158',
-  warning: '#FF9F0A',
-  danger: '#FF453A',
-  text: '#FFFFFF',
-  textMuted: '#8A93A6',
-  textFaint: '#5A6275',
-  accent: '#FFD60A',
+  bg: '#F4F6FA',        // app background (light)
+  surface: '#FFFFFF',   // cards / surfaces
+  surfaceAlt: '#EDF1F7',// inputs / subtle fills
+  border: '#D8DEE9',    // hairlines / outlines
+  primary: '#2563EB',   // brand blue
+  primaryDark: '#1D4ED8',
+  success: '#16A34A',
+  warning: '#D97706',
+  danger: '#DC2626',
+  text: '#101725',      // near-black headings/body
+  textMuted: '#5A6679', // secondary text
+  textFaint: '#97A1B2', // captions / placeholders
+  accent: '#0D9488',    // teal accent (challenge / liveness)
 };
 
 export const spacing = {

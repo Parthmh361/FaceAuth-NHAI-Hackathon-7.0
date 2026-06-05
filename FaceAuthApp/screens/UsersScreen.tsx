@@ -5,6 +5,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Database } from '../Database';
 import type { EmployeeProfile } from '../Database';
 import { Screen, Header, EmptyState, Button } from '../components/ui';
+import { Icon } from '../components/Icon';
 import { colors, spacing, radius, font } from '../theme';
 import { useApp } from '../context/AppContext';
 import type { RootStackParamList } from '../navigation/types';
@@ -29,7 +30,7 @@ function UserItem({
         <Text style={[font.caption, { marginTop: 2 }]}>Enrolled {enrolled}</Text>
       </View>
       <TouchableOpacity onPress={onDelete} style={styles.deleteBtn} activeOpacity={0.7}>
-        <Text style={styles.deleteTxt}>✕</Text>
+        <Icon name="close" size={16} color={colors.danger} />
       </TouchableOpacity>
     </View>
   );
@@ -99,7 +100,7 @@ export function UsersScreen() {
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <EmptyState
-            icon="👤"
+            icon="users"
             text={'No employees enrolled yet.\nTap + Enroll to add the first face profile.'}
           />
         }

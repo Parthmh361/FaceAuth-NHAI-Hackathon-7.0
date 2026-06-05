@@ -1,8 +1,8 @@
 import React from 'react';
-import { Text } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { colors } from '../theme';
+import { Icon, IconName } from '../components/Icon';
 import { BootScreen } from '../screens/BootScreen';
 import { HomeScreen } from '../screens/HomeScreen';
 import { EnrollScreen } from '../screens/EnrollScreen';
@@ -15,18 +15,20 @@ import type { RootStackParamList, TabParamList } from './types';
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<TabParamList>();
 
-const TAB_ICONS: Record<keyof TabParamList, string> = {
-  Home: '🏠',
-  History: '📋',
-  Users: '👤',
-  Settings: '⚙️',
+const TAB_ICONS: Record<keyof TabParamList, IconName> = {
+  Home: 'home',
+  History: 'history',
+  Users: 'users',
+  Settings: 'settings',
 };
 
 function TabIcon({ name, focused }: { name: keyof TabParamList; focused: boolean }) {
   return (
-    <Text style={{ fontSize: focused ? 22 : 19, opacity: focused ? 1 : 0.55 }}>
-      {TAB_ICONS[name]}
-    </Text>
+    <Icon
+      name={TAB_ICONS[name]}
+      size={focused ? 24 : 22}
+      color={focused ? colors.primary : colors.textMuted}
+    />
   );
 }
 

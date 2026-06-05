@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View, Text, TextInput, StyleSheet, ActivityIndicator,
   KeyboardAvoidingView, Platform, ScrollView,
@@ -6,25 +6,44 @@ import {
 import { FaceCamera } from '../components/FaceCamera';
 import { FaceAuthSDK } from '../FaceAuthSDK';
 import { Card, Header, Button } from '../components/ui';
+import { Icon } from '../components/Icon';
 import { colors, spacing, radius, font } from '../theme';
 import { useApp } from '../context/AppContext';
 import type { RootStackScreenProps } from '../navigation/types';
 
-type Phase = 'camera' | 'form' | 'processing' | 'done' | 'error';
+type Phase = 'camera' | 'analyzing' | 'form' | 'saving' | 'done' | 'error';
 
 export function EnrollScreen({ navigation }: RootStackScreenProps<'Enroll'>) {
   const { settings, refresh } = useApp();
   const [phase, setPhase] = useState<Phase>('camera');
-  const [photoPath, setPhotoPath] = useState('');
   const [employeeId, setEmployeeId] = useState('');
   const [name, setName] = useState('');
   const [designation, setDesignation] = useState('');
   const [error, setError] = useState('');
   const [enrolledName, setEnrolledName] = useState('');
 
-  const handleCapture = (path: string) => {
-    setPhotoPath(path);
-    setPhase('form');
+  // The face embedding is computed the instant we capture (while the camera's
+  // temp photo still exists) and held here until the form is submitted. This is
+  // why enrolment must NOT defer processing to the form — the temp photo can be
+  // purged by then, hanging the image pipeline.
+  const embeddingRef = useRef<Float32Array | null>(null);
+
+  const handleCapture = async (path: string) => {
+    setError('');
+    setPhase('analyzing');
+    try {
+      const r = await FaceAuthSDK.prepareEnrollment(path);
+      if (r.ok) {
+        embeddingRef.current = r.embedding;
+        setPhase('form');
+      } else {
+        setError(r.message);
+        setPhase('error');
+      }
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not analyze the captured face.');
+      setPhase('error');
+    }
   };
 
   const handleSubmit = async () => {
@@ -32,25 +51,35 @@ export function EnrollScreen({ navigation }: RootStackScreenProps<'Enroll'>) {
       setError('Employee ID and name are required.');
       return;
     }
+    if (!embeddingRef.current) {
+      setError('Face data missing — please retake the photo.');
+      setPhase('error');
+      return;
+    }
     setError('');
-    setPhase('processing');
-    const r = await FaceAuthSDK.enrollFromPhoto(photoPath, {
-      employeeId: employeeId.trim(),
-      name: name.trim(),
-      designation: designation.trim(),
-    });
-    if (r.ok) {
-      setEnrolledName(name.trim());
-      await refresh();
-      setPhase('done');
-    } else {
-      setError(r.message);
+    setPhase('saving');
+    try {
+      const r = await FaceAuthSDK.saveEnrollment(embeddingRef.current, {
+        employeeId: employeeId.trim(),
+        name: name.trim(),
+        designation: designation.trim(),
+      });
+      if (r.ok) {
+        setEnrolledName(name.trim());
+        await refresh();
+        setPhase('done');
+      } else {
+        setError(r.message);
+        setPhase('error');
+      }
+    } catch (e: any) {
+      setError(e?.message ?? 'Enrollment failed unexpectedly.');
       setPhase('error');
     }
   };
 
   const reset = () => {
-    setPhotoPath('');
+    embeddingRef.current = null;
     setEmployeeId('');
     setName('');
     setDesignation('');
@@ -70,11 +99,34 @@ export function EnrollScreen({ navigation }: RootStackScreenProps<'Enroll'>) {
     );
   }
 
-  if (phase === 'processing') {
+  if (phase === 'analyzing' || phase === 'saving') {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={[font.body, { marginTop: spacing.lg }]}>Processing face…</Text>
+        <Text style={[font.body, { marginTop: spacing.lg }]}>
+          {phase === 'analyzing' ? 'Analyzing face…' : 'Saving enrollment…'}
+        </Text>
+      </View>
+    );
+  }
+
+  if (phase === 'error') {
+    return (
+      <View style={styles.center}>
+        <Icon name="closeCircle" size={68} color={colors.danger} />
+        <Text style={[font.h3, { marginTop: spacing.lg, textAlign: 'center', color: colors.danger }]}>
+          Enrollment Failed
+        </Text>
+        <Text style={[font.body, { textAlign: 'center', marginTop: spacing.sm, color: colors.textMuted }]}>
+          {error}
+        </Text>
+        <Button title="Retake Photo" onPress={reset} style={styles.doneBtn} />
+        <Button
+          title="Cancel"
+          variant="ghost"
+          onPress={() => navigation.goBack()}
+          style={styles.doneBtnGhost}
+        />
       </View>
     );
   }
@@ -82,7 +134,7 @@ export function EnrollScreen({ navigation }: RootStackScreenProps<'Enroll'>) {
   if (phase === 'done') {
     return (
       <View style={styles.center}>
-        <Text style={styles.bigIcon}>✅</Text>
+        <Icon name="checkCircle" size={68} color={colors.success} />
         <Text style={[font.h2, { marginTop: spacing.lg, textAlign: 'center' }]}>
           {enrolledName} enrolled!
         </Text>

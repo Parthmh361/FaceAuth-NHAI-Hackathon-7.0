@@ -107,16 +107,21 @@ describe('spoofVerdict (passive anti-spoofing)', () => {
     expect(v.reasons).toContain('screen glare detected');
   });
 
-  it('treats a single failed check as still live', () => {
+  it('flags a soft over-bright backlit screen as spoof', () => {
+    const v = spoofVerdict(50, 0.001, 240); // soft + over-bright
+    expect(v.isLive).toBe(false);
+    expect(v.reasons).toContain('abnormal brightness');
+  });
+
+  it('treats a single soft check (no artefact) as still live', () => {
     const v = spoofVerdict(40, 0.001, 110); // only sharpness fails
     expect(v.isLive).toBe(true);
     expect(v.spoofScore).toBe(1);
   });
 
-  it('flags a backlit bright screen with glare', () => {
-    const v = spoofVerdict(200, 0.05, 230);
-    expect(v.isLive).toBe(false);
-    expect(v.reasons).toContain('abnormal brightness');
+  it('does NOT reject a sharp face in harsh sunlight (bright + glare but textured)', () => {
+    const v = spoofVerdict(180, 0.06, 235); // sharp skin, sunlit, some glare
+    expect(v.isLive).toBe(true); // sharpness gates the verdict
   });
 });
 

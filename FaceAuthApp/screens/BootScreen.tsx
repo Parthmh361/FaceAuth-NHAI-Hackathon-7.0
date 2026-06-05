@@ -13,9 +13,8 @@ export function BootScreen({ navigation }: RootStackScreenProps<'Boot'>) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    Camera.getCameraPermissionStatus().then(s => {
-      setPermStatus(s === 'granted' ? 'granted' : s === 'denied' ? 'denied' : 'unknown');
-    });
+    const s = Camera.getCameraPermissionStatus();
+    setPermStatus(s === 'granted' ? 'granted' : s === 'denied' ? 'denied' : 'unknown');
   }, []);
 
   useEffect(() => {

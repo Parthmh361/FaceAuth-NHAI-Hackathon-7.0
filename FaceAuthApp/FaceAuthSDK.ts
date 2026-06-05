@@ -90,6 +90,14 @@ export const FaceAuthSDK = {
     try {
       const srcUri = photoPath.startsWith('file://') ? photoPath : `file://${photoPath}`;
 
+      // Guard: if the captured photo no longer exists (e.g. the OS purged the
+      // camera's temp file), bail out with a clear error. Without this, the
+      // native image resizer can hang forever on a missing path.
+      const rawPath = photoPath.startsWith('file://') ? photoPath.slice(7) : photoPath;
+      if (!(await RNFS.exists(rawPath))) {
+        return { ok: false, stage: 'error', message: 'Captured photo expired — please retake.' };
+      }
+
       // Downscale ONCE (native) before any JS pixel work — avoids the UI freeze
       // that full-res JPEG decoding in pure JS caused.
       const resized = await ImageResizer.createResizedImage(
@@ -110,7 +118,9 @@ export const FaceAuthSDK = {
       const le = face.leftEyeOpenProbability ?? 1;
       const re = face.rightEyeOpenProbability ?? 1;
       if (le < 0.2 || re < 0.2) return { ok: false, stage: 'liveness', message: 'Eyes appear closed' };
-      if (Math.abs(face.headEulerAngleY ?? 0) > 25) {
+      // `rotationY` is the yaw (ML Kit has no `headEulerAngleY`); reject only
+      // strongly off-axis faces so a near-frontal capture still enrols/verifies.
+      if (Math.abs(face.rotationY ?? 0) > 30) {
         return { ok: false, stage: 'liveness', message: 'Look directly at the camera' };
       }
 
@@ -153,6 +163,42 @@ export const FaceAuthSDK = {
     if (!r.ok) return r;
     await Database.enrollEmployee(who.employeeId, who.name, who.designation, r.embedding);
     return { ok: true, employeeId: who.employeeId, timing: r.timing };
+  },
+
+  /**
+   * Run the full face pipeline on a freshly-captured photo and return the
+   * embedding WITHOUT saving. Call this immediately after capture (while the
+   * temp photo still exists), then persist later with saveEnrollment().
+   */
+  async prepareEnrollment(
+    photoPath: string,
+  ): Promise<{ ok: true; embedding: Float32Array; timing: Timing } | PipelineFailure> {
+    const r = await this._embedFromPhoto(photoPath);
+    if (!r.ok) return r;
+    // Reject re-enrolling a face that already belongs to someone, so the same
+    // person can't be added twice under different IDs.
+    const existing = await Database.authenticateUser(r.embedding, _threshold);
+    if (existing) {
+      return {
+        ok: false,
+        stage: 'match',
+        message: `This face is already enrolled as ${existing.name} (${existing.employeeId}).`,
+      };
+    }
+    return r;
+  },
+
+  /** Persist a pre-computed embedding (from prepareEnrollment) to the DB. */
+  async saveEnrollment(
+    embedding: Float32Array,
+    who: { employeeId: string; name: string; designation: string },
+  ): Promise<EnrollSuccess | PipelineFailure> {
+    try {
+      await Database.enrollEmployee(who.employeeId, who.name, who.designation, embedding);
+      return { ok: true, employeeId: who.employeeId, timing: { mlKitMs: 0, prepMs: 0, onnxMs: 0, dbMs: 0, totalMs: 0 } };
+    } catch (e: any) {
+      return { ok: false, stage: 'error', message: e?.message ?? 'Failed to save enrollment' };
+    }
   },
 
   async verifyFromPhoto(

@@ -79,7 +79,7 @@ export function HistoryScreen() {
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <EmptyState
-            icon="📋"
+            icon="history"
             text={'No attendance records yet.\nVerify an employee to log attendance.'}
           />
         }

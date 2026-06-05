@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors, spacing, radius, font } from '../theme';
+import { Icon, IconName } from './Icon';
 
 export function Screen({
   children, scroll = true, padded = true,
@@ -107,10 +108,12 @@ export function ListItem({
   );
 }
 
-export function EmptyState({ icon, text }: { icon: string; text: string }) {
+export function EmptyState({ icon, text }: { icon: IconName; text: string }) {
   return (
     <View style={styles.empty}>
-      <Text style={{ fontSize: 44, marginBottom: spacing.md }}>{icon}</Text>
+      <View style={{ marginBottom: spacing.md, opacity: 0.5 }}>
+        <Icon name={icon} size={48} color={colors.textMuted} />
+      </View>
       <Text style={[font.label, { textAlign: 'center' }]}>{text}</Text>
     </View>
   );
