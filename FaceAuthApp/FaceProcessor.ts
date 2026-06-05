@@ -1,88 +1,122 @@
 import RNFS from 'react-native-fs';
-import ImageResizer from '@bam.tech/react-native-image-resizer';
 import * as base64 from 'base64-js';
+
+function bilinearResize(
+  src: Uint8Array,
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number,
+): Uint8Array {
+  const dst = new Uint8Array(dstW * dstH * 4);
+  const xRatio = srcW / dstW;
+  const yRatio = srcH / dstH;
+
+  for (let y = 0; y < dstH; y++) {
+    for (let x = 0; x < dstW; x++) {
+      const sx = x * xRatio;
+      const sy = y * yRatio;
+      const x0 = Math.floor(sx);
+      const y0 = Math.floor(sy);
+      const x1 = Math.min(x0 + 1, srcW - 1);
+      const y1 = Math.min(y0 + 1, srcH - 1);
+      const xf = sx - x0;
+      const yf = sy - y0;
+      const di = (y * dstW + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        const p00 = src[(y0 * srcW + x0) * 4 + c];
+        const p01 = src[(y0 * srcW + x1) * 4 + c];
+        const p10 = src[(y1 * srcW + x0) * 4 + c];
+        const p11 = src[(y1 * srcW + x1) * 4 + c];
+        dst[di + c] = Math.round(
+          p00 * (1 - xf) * (1 - yf) +
+          p01 * xf * (1 - yf) +
+          p10 * (1 - xf) * yf +
+          p11 * xf * yf,
+        );
+      }
+      dst[di + 3] = 255;
+    }
+  }
+  return dst;
+}
+
+// Gamma-LUT correction for harsh outdoor / low-light conditions.
+// Only fires when mean luminance is outside the 60–190 band.
+function applyAdaptiveGamma(data: Uint8Array, n: number): void {
+  let lum = 0;
+  for (let i = 0; i < n; i++) {
+    lum += data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114;
+  }
+  const mean = lum / n;
+  if (mean >= 60 && mean <= 190) return;
+
+  const gamma = Math.max(0.4, Math.min(2.5, Math.log(127.5) / Math.log(Math.max(1, mean))));
+  const lut = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    lut[i] = Math.round(255 * Math.pow(i / 255, gamma));
+  }
+  for (let i = 0; i < n; i++) {
+    data[i * 4] = lut[data[i * 4]];
+    data[i * 4 + 1] = lut[data[i * 4 + 1]];
+    data[i * 4 + 2] = lut[data[i * 4 + 2]];
+  }
+}
 
 export class FaceProcessor {
   /**
-   * Crops the image to the detected face bounding box and resizes it to 112x112.
+   * Single-pass pipeline: crop face region from the full photo using ML Kit
+   * bounding box, bilinear-resize to 112×112, apply adaptive gamma for lighting
+   * robustness, then return a Float32Array in NCHW format for ONNX inference.
+   *
+   * Replaces the old two-step cropAndResizeFace + imageToFloat32Array that
+   * discarded the crop coordinates and squeezed the full image to 112×112.
    */
-  static async cropAndResizeFace(
+  static async cropResizeAndNormalize(
     imageUri: string,
-    frame: { top: number; left: number; width: number; height: number }
-  ): Promise<string> {
-    
-    // Add a small margin (20%) around the face for better MobileFaceNet alignment
-    const marginX = frame.width * 0.2;
-    const marginY = frame.height * 0.2;
-    
-    // Ensure we don't go out of bounds (naive approach, assume image is large enough or allow ImageResizer to handle it)
-    const cropX = Math.max(0, frame.left - marginX / 2);
-    const cropY = Math.max(0, frame.top - marginY / 2);
-    const cropWidth = frame.width + marginX;
-    const cropHeight = frame.height + marginY;
-
-    try {
-      const scaled = await ImageResizer.createResizedImage(
-        imageUri,
-        112,
-        112,
-        'JPEG',
-        100,
-        0,
-        undefined,
-        false,
-        { mode: 'stretch' }
-      );
-      
-      return scaled.uri;
-    } catch (err) {
-      console.error('Failed to resize face image', err);
-      throw err;
-    }
-  }
-
-  /**
-   * Converts a 112x112 JPEG file to a Float32Array suitable for ONNX input (1, 3, 112, 112).
-   */
-  static async imageToFloat32Array(imageUri: string): Promise<Float32Array> {
-    const base64Str = await RNFS.readFile(imageUri, 'base64');
-    const bytes = base64.toByteArray(base64Str);
-    
-    // We import jpeg-js dynamically to avoid top-level issues if not needed
+    frame: { top: number; left: number; width: number; height: number },
+  ): Promise<Float32Array> {
     const jpeg = require('jpeg-js');
-    
-    // Decode the JPEG into raw pixels (RGBA format)
-    const rawImageData = jpeg.decode(bytes, { useTArray: true });
-    
-    const width = rawImageData.width;
-    const height = rawImageData.height;
-    const data = rawImageData.data; // Uint8Array of [R, G, B, A, R, G, B, A...]
-    
-    // ONNX models typically expect NCHW format (Batch, Channels, Height, Width)
-    // MobileFaceNet requires [1, 3, 112, 112]
-    const floatArray = new Float32Array(1 * 3 * width * height);
-    
-    const channelSize = width * height;
-    
-    for (let i = 0; i < channelSize; i++) {
-        // Source indices (RGBA)
-        const srcIdx = i * 4;
-        const r = data[srcIdx];
-        const g = data[srcIdx + 1];
-        const b = data[srcIdx + 2];
-        
-        // Normalize to [-1.0, 1.0] => (pixel - 127.5) / 127.5
-        const rNorm = (r - 127.5) / 127.5;
-        const gNorm = (g - 127.5) / 127.5;
-        const bNorm = (b - 127.5) / 127.5;
-        
-        // MobileFaceNet usually expects RGB (or BGR depending on the exact training)
-        // We will pass RGB in NCHW format
-        floatArray[i] = rNorm;                         // Channel 0: R
-        floatArray[i + channelSize] = gNorm;           // Channel 1: G
-        floatArray[i + channelSize * 2] = bNorm;       // Channel 2: B
+    const path = imageUri.startsWith('file://') ? imageUri.slice(7) : imageUri;
+    const b64 = await RNFS.readFile(path, 'base64');
+    const bytes = base64.toByteArray(b64);
+    const { data, width: imgW, height: imgH } = jpeg.decode(bytes, { useTArray: true });
+
+    // 20% margin around detected bounding box
+    const mx = frame.width * 0.1;
+    const my = frame.height * 0.1;
+    const cropX = Math.max(0, Math.floor(frame.left - mx));
+    const cropY = Math.max(0, Math.floor(frame.top - my));
+    const cropW = Math.min(imgW - cropX, Math.ceil(frame.width + mx * 2));
+    const cropH = Math.min(imgH - cropY, Math.ceil(frame.height + my * 2));
+
+    if (cropW <= 0 || cropH <= 0) {
+      throw new Error(`Invalid face crop region: ${cropW}x${cropH}`);
     }
-    
-    return floatArray;
+
+    // Extract the face region from the decoded RGBA pixel buffer
+    const crop = new Uint8Array(cropW * cropH * 4);
+    for (let y = 0; y < cropH; y++) {
+      for (let x = 0; x < cropW; x++) {
+        const si = ((cropY + y) * imgW + (cropX + x)) * 4;
+        const di = (y * cropW + x) * 4;
+        crop[di] = data[si];
+        crop[di + 1] = data[si + 1];
+        crop[di + 2] = data[si + 2];
+        crop[di + 3] = 255;
+      }
+    }
+
+    applyAdaptiveGamma(crop, cropW * cropH);
+
+    const resized = bilinearResize(crop, cropW, cropH, 112, 112);
+    const C = 112 * 112;
+    const tensor = new Float32Array(3 * C);
+    for (let i = 0; i < C; i++) {
+      tensor[i] = (resized[i * 4] - 127.5) / 127.5;
+      tensor[i + C] = (resized[i * 4 + 1] - 127.5) / 127.5;
+      tensor[i + C * 2] = (resized[i * 4 + 2] - 127.5) / 127.5;
+    }
+    return tensor;
   }
 }

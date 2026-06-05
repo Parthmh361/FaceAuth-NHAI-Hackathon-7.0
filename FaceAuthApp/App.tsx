@@ -1,9 +1,8 @@
 /**
- * NHAI 7.0 — Offline Face Authentication System
- * Step 1 & 2: Camera Preview & Local Storage
- *
- * NO Frame Processors, NO ONNX, NO worklets-core
- * Front camera preview, permission handling, capturing & local filesystem storage.
+ * NHAI Hackathon 7.0 — Offline Face Authentication System
+ * Features: Challenge-response liveness · AES-256 encrypted embeddings
+ *           Offline attendance queue · AWS sync on connectivity restore
+ *           Adaptive gamma preprocessing · Performance benchmark overlay
  */
 
 import React, { useCallback, useRef, useState, useEffect } from 'react';
@@ -31,22 +30,43 @@ import RNFS from 'react-native-fs';
 import FaceDetection, { FaceDetectorOptions } from '@react-native-ml-kit/face-detection';
 import { Database } from './Database';
 import { FaceProcessor } from './FaceProcessor';
+import { SyncService } from './SyncService';
 
 const { width } = Dimensions.get('window');
 const GALLERY_IMAGE_SIZE = width / 3 - 4;
+const MODEL_NAME = 'w600k_mbf.onnx'; // swap to 'w600k_mbf_int8.onnx' after quantization
 
-// ─── Permission Status Screen ──────────────────────────────────
-function PermissionScreen({
-  onRequest,
-}: {
-  onRequest: () => void;
-}): React.JSX.Element {
+// ─── Challenge-response config ──────────────────────────────────
+type ChallengeType = 'BLINK' | 'SMILE' | 'TURN_LEFT' | 'TURN_RIGHT';
+const CHALLENGES: ChallengeType[] = ['BLINK', 'SMILE', 'TURN_LEFT', 'TURN_RIGHT'];
+
+const CHALLENGE_PROMPTS: Record<ChallengeType, string> = {
+  BLINK: 'Please BLINK',
+  SMILE: 'Please SMILE',
+  TURN_LEFT: 'Turn HEAD LEFT',
+  TURN_RIGHT: 'Turn HEAD RIGHT',
+};
+const CHALLENGE_ICONS: Record<ChallengeType, string> = {
+  BLINK: '👁',
+  SMILE: '😊',
+  TURN_LEFT: '↩',
+  TURN_RIGHT: '↪',
+};
+
+interface Benchmark {
+  mlKitMs: number;
+  prepMs: number;
+  onnxMs: number;
+  dbMs: number;
+  totalMs: number;
+}
+
+// ─── Permission Screen ───────────────────────────────────────────
+function PermissionScreen({ onRequest }: { onRequest: () => void }) {
   return (
     <View style={styles.permissionContainer}>
       <StatusBar barStyle="light-content" backgroundColor="#0D0D0D" />
-      <View style={styles.iconContainer}>
-        <Text style={styles.lockIcon}>🔒</Text>
-      </View>
+      <Text style={styles.lockIcon}>🔒</Text>
       <Text style={styles.permissionTitle}>Camera Access Required</Text>
       <Text style={styles.permissionDescription}>
         This app needs camera access to perform offline face authentication.
@@ -59,201 +79,274 @@ function PermissionScreen({
   );
 }
 
-// ─── No Device Screen ──────────────────────────────────────────
-function NoDeviceScreen(): React.JSX.Element {
+function NoDeviceScreen() {
   return (
     <View style={styles.permissionContainer}>
       <StatusBar barStyle="light-content" backgroundColor="#0D0D0D" />
       <Text style={styles.lockIcon}>📷</Text>
       <Text style={styles.permissionTitle}>No Camera Found</Text>
       <Text style={styles.permissionDescription}>
-        Could not find a camera device. Please ensure you are running on a
-        physical device with a front-facing camera.
+        Please run on a physical device with a front-facing camera.
       </Text>
     </View>
   );
 }
 
-// ─── Main App ──────────────────────────────────────────────────
+// ─── Main App ─────────────────────────────────────────────────────
 function App(): React.JSX.Element {
-  const [cameraPosition, setCameraPosition] =
-    useState<CameraPosition>('front');
+  const [cameraPosition, setCameraPosition] = useState<CameraPosition>('front');
   const device = useCameraDevice(cameraPosition);
   const { hasPermission, requestPermission } = useCameraPermission();
-  
+
   const cameraRef = useRef<Camera>(null);
-  
+
+  // UI state
   const [capturedPhoto, setCapturedPhoto] = useState<string | null>(null);
   const [gallery, setGallery] = useState<string[]>([]);
   const [showGallery, setShowGallery] = useState(false);
   const [enrollName, setEnrollName] = useState('');
-  
-  // Phase 6: Pseudo-Realtime Tracking State
+
+  // ONNX
+  const [onnxSession, setOnnxSession] = useState<any>(null);
+  const [isInitializingONNX, setIsInitializingONNX] = useState(false);
+
+  // Tracking / liveness
   const [isTracking, setIsTracking] = useState(false);
   const [faceBounds, setFaceBounds] = useState<any>(null);
   const [livenessMsg, setLivenessMsg] = useState('Position face in frame');
   const [isAligned, setIsAligned] = useState(false);
   const isProcessingFrame = useRef(false);
   const stableFramesCount = useRef(0);
-  
-  // Phase 2: ONNX Runtime
-  const [onnxSession, setOnnxSession] = useState<any>(null);
-  const [isInitializingONNX, setIsInitializingONNX] = useState(false);
-  
+
+  // Challenge-response liveness
+  const [challenge, setChallenge] = useState<ChallengeType | null>(null);
+  const [challengeCompleted, setChallengeCompleted] = useState(false);
+  const challengeRef = useRef<ChallengeType | null>(null);
+  const challengeCompletedRef = useRef(false);
+  const blinkWasClosed = useRef(false);
+  const smileFrames = useRef(0);
+
+  // Sync status
+  const [pendingCount, setPendingCount] = useState(0);
+  const [syncMsg, setSyncMsg] = useState('');
+
+  // Benchmark overlay
+  const [benchmark, setBenchmark] = useState<Benchmark | null>(null);
+  const [showBenchmark, setShowBenchmark] = useState(false);
+
+  // Keep refs in sync with state (so interval callbacks always read latest values)
+  useEffect(() => { challengeRef.current = challenge; }, [challenge]);
+  useEffect(() => { challengeCompletedRef.current = challengeCompleted; }, [challengeCompleted]);
+
+  // ─── Init: DB + gallery + SyncService ────────────────────────
+  useEffect(() => {
+    Database.initDB().catch(e => console.error('DB init error', e));
+
+    RNFS.readDir(RNFS.DocumentDirectoryPath).then(files => {
+      const imgs = files
+        .filter(f => f.isFile() && f.name.endsWith('.jpg'))
+        .sort((a, b) => b.mtime!.getTime() - a.mtime!.getTime())
+        .map(f => `file://${f.path}`);
+      setGallery(imgs);
+    }).catch(() => {});
+
+    SyncService.start(result => {
+      if (result.synced > 0) {
+        setSyncMsg(`Synced ${result.synced} records`);
+        refreshPendingCount();
+        setTimeout(() => setSyncMsg(''), 4000);
+      }
+    });
+
+    refreshPendingCount();
+    return () => SyncService.stop();
+  }, []);
+
+  const refreshPendingCount = async () => {
+    try {
+      const n = await Database.getPendingCount();
+      setPendingCount(n);
+    } catch {}
+  };
+
+  // ─── ONNX initialisation ──────────────────────────────────────
   const initONNX = async () => {
     setIsInitializingONNX(true);
     try {
-      // Dynamic import to avoid crash if native module isn't linked
       const { InferenceSession, Tensor } = require('onnxruntime-react-native');
-      
-      const modelName = 'w600k_mbf.onnx';
-      const destPath = `${RNFS.DocumentDirectoryPath}/${modelName}`;
-      
-      // The ONNX C++ core cannot read directly from compressed APK assets.
-      // We must copy it to a real file path first.
-      const exists = await RNFS.exists(destPath);
-      if (!exists) {
-        console.log('Copying ONNX model from assets to internal storage...');
-        await RNFS.copyFileAssets(modelName, destPath);
+      const destPath = `${RNFS.DocumentDirectoryPath}/${MODEL_NAME}`;
+
+      // Android: copy from compressed APK assets to a real file path.
+      // iOS: model must be added to the Xcode bundle; access via RNFS.MainBundlePath.
+      if (Platform.OS === 'android') {
+        if (!(await RNFS.exists(destPath))) {
+          await RNFS.copyFileAssets(MODEL_NAME, destPath);
+        }
       }
-      
-      console.log('Loading ONNX Model from:', destPath);
-      // We pass the absolute path (or file:// URI) to InferenceSession
-      const session = await InferenceSession.create(destPath);
+
+      const modelPath =
+        Platform.OS === 'ios'
+          ? `${RNFS.MainBundlePath}/${MODEL_NAME}`
+          : destPath;
+
+      const session = await InferenceSession.create(modelPath);
+
+      // Warm-up pass to load weights into L1/L2 cache
+      const dummy = new Float32Array(1 * 3 * 112 * 112);
+      const t = new Tensor('float32', dummy, [1, 3, 112, 112]);
+      const t0 = Date.now();
+      await session.run({ 'input.1': t });
+      const warmupMs = Date.now() - t0;
+
       setOnnxSession(session);
-      console.log('ONNX Session created successfully!', session);
-      
-      // Verification: Run dummy inference (1x3x112x112)
-      const dummyInput = new Float32Array(1 * 3 * 112 * 112);
-      const tensor = new Tensor('float32', dummyInput, [1, 3, 112, 112]);
-      
-      const startTime = Date.now();
-      const feeds = { 'input.1': tensor }; // The MobileFaceNet model expects the input name 'input.1'
-      const results = await session.run(feeds);
-      const endTime = Date.now();
-      
-      const outputTensor: any = Object.values(results)[0];
-      
-      Alert.alert(
-        'ONNX Ready! ✅', 
-        `Session created & Dummy inference completed in ${endTime - startTime}ms.\nOutput Shape: [${outputTensor.dims.join(', ')}]`
-      );
+      Alert.alert('ONNX Ready', `Model loaded. Warm-up: ${warmupMs}ms`);
     } catch (err: any) {
-      console.error('Failed to init ONNX:', err);
-      Alert.alert('ONNX Error ❌', err.message);
+      Alert.alert('ONNX Error', err.message);
     } finally {
       setIsInitializingONNX(false);
     }
   };
 
-  // Load existing images from filesystem on startup
+  // ─── Pseudo-realtime tracking loop (400ms / 2.5 FPS) ─────────
   useEffect(() => {
-    Database.initDB().catch(e => console.error('DB Init Error', e));
+    let interval: NodeJS.Timeout;
 
-    const loadGallery = async () => {
-      try {
-        const files = await RNFS.readDir(RNFS.DocumentDirectoryPath);
-        const images = files
-          .filter(f => f.isFile() && f.name.endsWith('.jpg'))
-          .sort((a, b) => b.mtime!.getTime() - a.mtime!.getTime()) // Newest first
-          .map(f => `file://${f.path}`);
-        setGallery(images);
-      } catch (err) {
-        console.error('Failed to load gallery', err);
-      }
-    };
-    loadGallery();
-  }, []);
+    if (isTracking && !capturedPhoto) {
+      interval = setInterval(async () => {
+        if (isProcessingFrame.current || !cameraRef.current) return;
+        isProcessingFrame.current = true;
 
-  // Phase 3: Test Database & Cosine Similarity
-  const testDatabase = async () => {
-    if (!onnxSession) {
-      Alert.alert('Hold on!', 'Please initialize ONNX first.');
-      return;
+        let tempPath = '';
+        try {
+          const photo = await cameraRef.current.takePhoto({ flash: 'off' });
+          tempPath = photo.path;
+
+          const faces = await FaceDetection.detect(`file://${photo.path}`, {
+            classificationMode: 'all',
+            contourMode: 'none',
+            landmarkMode: 'none',
+            performanceMode: 'fast',
+          });
+
+          if (faces.length !== 1) {
+            setFaceBounds(null);
+            setLivenessMsg(faces.length === 0 ? 'No face detected' : 'Multiple faces detected');
+            setIsAligned(false);
+            stableFramesCount.current = 0;
+            return;
+          }
+
+          const face = faces[0];
+
+          // Map bounding box from image → screen coordinates
+          const imgW = photo.width;
+          const imgH = photo.height;
+          const screenH = Dimensions.get('window').height;
+          const scale = Math.max(width / imgW, screenH / imgH);
+          const offX = (imgW * scale - width) / 2;
+          const offY = (imgH * scale - screenH) / 2;
+          setFaceBounds({
+            x: face.frame.left * scale - offX,
+            y: face.frame.top * scale - offY,
+            width: face.frame.width * scale,
+            height: face.frame.height * scale,
+          });
+
+          const yaw = face.yawAngle ?? 0;
+          const leftEye = face.leftEyeOpenProbability ?? 0;
+          const rightEye = face.rightEyeOpenProbability ?? 0;
+          const smile = face.smilingProbability ?? 0;
+
+          // Phase 1 — assign random challenge on first face detection
+          if (!challengeRef.current) {
+            const picked = CHALLENGES[Math.floor(Math.random() * CHALLENGES.length)];
+            challengeRef.current = picked;
+            setChallenge(picked);
+            setLivenessMsg(CHALLENGE_PROMPTS[picked]);
+            setIsAligned(false);
+            stableFramesCount.current = 0;
+            return;
+          }
+
+          // Phase 2 — verify the challenge
+          if (!challengeCompletedRef.current) {
+            let done = false;
+
+            switch (challengeRef.current) {
+              case 'BLINK': {
+                const avgEye = (leftEye + rightEye) / 2;
+                if (avgEye < 0.15) {
+                  blinkWasClosed.current = true;
+                } else if (blinkWasClosed.current && avgEye > 0.45) {
+                  done = true;
+                  blinkWasClosed.current = false;
+                }
+                setLivenessMsg(blinkWasClosed.current ? 'Eyes closing... open them!' : 'Please BLINK 👁');
+                break;
+              }
+              case 'SMILE':
+                smileFrames.current = smile > 0.72 ? smileFrames.current + 1 : 0;
+                done = smileFrames.current >= 2;
+                setLivenessMsg('Please SMILE 😊');
+                break;
+              case 'TURN_LEFT':
+                done = yaw < -28;
+                setLivenessMsg('Turn head LEFT ↩');
+                break;
+              case 'TURN_RIGHT':
+                done = yaw > 28;
+                setLivenessMsg('Turn head RIGHT ↪');
+                break;
+            }
+
+            if (done) {
+              challengeCompletedRef.current = true;
+              setChallengeCompleted(true);
+              setLivenessMsg('Challenge passed! Hold still…');
+              stableFramesCount.current = 0;
+            }
+            setIsAligned(false);
+            return;
+          }
+
+          // Phase 3 — stable alignment check → auto-capture
+          if (Math.abs(yaw) > 15) {
+            setLivenessMsg('Look straight ahead');
+            setIsAligned(false);
+            stableFramesCount.current = 0;
+          } else if (leftEye < 0.3 || rightEye < 0.3) {
+            setLivenessMsg('Keep eyes open');
+            setIsAligned(false);
+            stableFramesCount.current = 0;
+          } else {
+            setLivenessMsg('Perfect! Capturing…');
+            setIsAligned(true);
+            stableFramesCount.current += 1;
+            if (stableFramesCount.current >= 3) {
+              stableFramesCount.current = 0;
+              await takePhotoSilent();
+            }
+          }
+        } catch (e) {
+          console.log('Frame drop:', e);
+        } finally {
+          if (tempPath) RNFS.unlink(tempPath).catch(() => {});
+          isProcessingFrame.current = false;
+        }
+      }, 400);
     }
 
+    return () => clearInterval(interval);
+  }, [isTracking, capturedPhoto]);
+
+  const takePhotoSilent = async () => {
     try {
-      const { Tensor } = require('onnxruntime-react-native');
-      
-      // 1. Generate a "dummy" embedding using ONNX
-      const dummyInput = new Float32Array(1 * 3 * 112 * 112);
-      const tensor = new Tensor('float32', dummyInput, [1, 3, 112, 112]);
-      const results = await onnxSession.run({ 'input.1': tensor });
-      const rawEmbedding = Object.values(results)[0] as any;
-      const embeddingData = rawEmbedding.data as Float32Array;
-      
-      // Normalize it
-      const norm = Math.sqrt(embeddingData.reduce((sum, val) => sum + val * val, 0));
-      const embedding = new Float32Array(embeddingData.map(v => v / (norm || 1)));
-
-      // 2. Save it to SQLite
-      const testEmpId = `EMP-${Math.floor(Math.random() * 10000)}`;
-      await Database.saveEmbedding(testEmpId, embedding);
-      
-      // 3. Authenticate against it!
-      const startTime = Date.now();
-      const match = await Database.authenticateUser(embedding, 0.6);
-      const endTime = Date.now();
-
-      if (match) {
-        Alert.alert(
-          'Phase 3 Verified! 🔐', 
-          `Matched ID: ${match.employeeId}\nSimilarity Score: ${(match.score * 100).toFixed(2)}%\nAuth Time: ${endTime - startTime}ms`
-        );
-      } else {
-        Alert.alert('Auth Failed', 'No match found.');
-      }
-
-    } catch (e: any) {
-      console.error(e);
-      Alert.alert('Database Test Error', e.message);
-    }
-  };
-
-  const clearDatabase = async () => {
-    try {
-      await Database.clearAllUsers();
-      Alert.alert('Success', 'All enrolled users have been deleted.');
-    } catch (err: any) {
-      Alert.alert('Error', 'Failed to clear database: ' + err.message);
-    }
-  };
-
-  // Request permission handler
-  const handleRequestPermission = useCallback(async () => {
-    const granted = await requestPermission();
-    if (!granted) {
-      Alert.alert(
-        'Permission Denied',
-        'Camera permission was denied. Please enable it in your device settings.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Open Settings',
-            onPress: () => Linking.openSettings(),
-          },
-        ],
-      );
-    }
-  }, [requestPermission]);
-
-  // Toggle camera position
-  const toggleCamera = useCallback(() => {
-    setCameraPosition(prev => (prev === 'front' ? 'back' : 'front'));
-  }, []);
-
-  const takePhoto = async () => {
-    try {
-      if (cameraRef.current == null) throw new Error('Camera ref is null');
-      
-      const photo = await cameraRef.current.takePhoto({
-        flash: 'off',
-      });
-      
+      if (!cameraRef.current) return;
+      const photo = await cameraRef.current.takePhoto({ flash: 'off' });
       setCapturedPhoto(photo.path);
-      setIsTracking(false); // Stop tracking loop once captured
+      setIsTracking(false);
     } catch (e) {
-      console.error('Failed to take photo', e);
+      console.error('takePhoto failed', e);
     }
   };
 
@@ -261,217 +354,167 @@ function App(): React.JSX.Element {
     setCapturedPhoto(null);
     setFaceBounds(null);
     setIsAligned(false);
+    setChallenge(null);
+    setChallengeCompleted(false);
+    challengeRef.current = null;
+    challengeCompletedRef.current = false;
+    blinkWasClosed.current = false;
+    smileFrames.current = 0;
     stableFramesCount.current = 0;
+    setBenchmark(null);
+    setShowBenchmark(false);
   };
 
-  // ─── PSEUDO-REALTIME TRACKING LOOP ──────────────────────────────
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    
-    if (isTracking && !capturedPhoto) {
-      interval = setInterval(async () => {
-        if (isProcessingFrame.current || !cameraRef.current) return;
-        isProcessingFrame.current = true;
-        
-        let tempPhotoPath = '';
-        try {
-          // Take a silent, fast photo for ML Kit
-          const photo = await cameraRef.current.takePhoto({ flash: 'off' });
-          tempPhotoPath = photo.path;
-          
-          const faces = await FaceDetection.detect(`file://${photo.path}`, {
-            classificationMode: 'all',
-            contourMode: 'none',
-            landmarkMode: 'none',
-            performanceMode: 'fast',
-          });
-          
-          if (faces.length === 1) {
-            const face = faces[0];
-            
-            // Map Bounding Box from Image Coordinates to Screen Coordinates
-            // VisionCamera defaults to resizeMode="cover"
-            const imgW = photo.width;
-            const imgH = photo.height;
-            const screenW = width;
-            const screenH = Dimensions.get('window').height;
-            
-            const scaleX = screenW / imgW;
-            const scaleY = screenH / imgH;
-            const scale = Math.max(scaleX, scaleY);
-            
-            const scaledW = imgW * scale;
-            const scaledH = imgH * scale;
-            
-            const offsetX = (scaledW - screenW) / 2;
-            const offsetY = (scaledH - screenH) / 2;
-            
-            const mappedBounds = {
-              x: face.frame.left * scale - offsetX,
-              y: face.frame.top * scale - offsetY,
-              width: face.frame.width * scale,
-              height: face.frame.height * scale,
-            };
-            setFaceBounds(mappedBounds);
-            
-            // Liveness & Alignment Checks
-            const pitch = face.pitchAngle ?? 0;
-            const yaw = face.yawAngle ?? 0;
-            const leftEye = face.leftEyeOpenProbability ?? 0;
-            const rightEye = face.rightEyeOpenProbability ?? 0;
-            
-            if (Math.abs(yaw) > 15) {
-              setLivenessMsg('Look straight ahead ❌');
-              setIsAligned(false);
-              stableFramesCount.current = 0;
-            } else if (leftEye < 0.3 || rightEye < 0.3) {
-              setLivenessMsg('Keep eyes open ❌');
-              setIsAligned(false);
-              stableFramesCount.current = 0;
-            } else {
-              setLivenessMsg('Perfect! Hold still ✅');
-              setIsAligned(true);
-              stableFramesCount.current += 1;
-              
-              if (stableFramesCount.current >= 3) {
-                // Auto-Capture!
-                stableFramesCount.current = 0;
-                await takePhoto();
-              }
-            }
-          } else {
-            setFaceBounds(null);
-            setLivenessMsg(faces.length === 0 ? 'No face detected' : 'Multiple faces detected ❌');
-            setIsAligned(false);
-            stableFramesCount.current = 0;
-          }
-        } catch (e) {
-          console.log('Frame drop:', e);
-        } finally {
-          // Cleanup temp photo to prevent storage leak
-          if (tempPhotoPath) {
-            RNFS.unlink(tempPhotoPath).catch(() => {});
-          }
-          isProcessingFrame.current = false;
-        }
-      }, 400); // Process a frame every 400ms (~2.5 FPS)
+  const handleRequestPermission = useCallback(async () => {
+    const granted = await requestPermission();
+    if (!granted) {
+      Alert.alert('Permission Denied', 'Enable camera in device settings.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open Settings', onPress: () => Linking.openSettings() },
+      ]);
     }
-    
-    return () => clearInterval(interval);
-  }, [isTracking, capturedPhoto]);
+  }, [requestPermission]);
 
+  // ─── Enroll / Verify ──────────────────────────────────────────
   const processFace = async (action: 'ENROLL' | 'VERIFY') => {
     if (!capturedPhoto) return;
     if (!onnxSession) {
-      Alert.alert('Hold on!', 'Please initialize ONNX first using the Top Bar button.');
+      Alert.alert('Not ready', 'Please initialise ONNX first.');
       return;
     }
 
+    const completedChallenge = challengeRef.current ?? 'NONE';
+    const t0 = Date.now();
+
     try {
       const fileName = `face_auth_${Date.now()}.jpg`;
-      const destPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+      const savedPath = `${RNFS.DocumentDirectoryPath}/${fileName}`;
+      await RNFS.copyFile(capturedPhoto, savedPath);
+      const savedUri = `file://${savedPath}`;
+      setGallery(prev => [`file://${savedPath}`, ...prev]);
 
-      // Copy from temporary cache to permanent document directory
-      await RNFS.copyFile(capturedPhoto, destPath);
-      
-      const newSavedUri = `file://${destPath}`;
-      setGallery(prev => [newSavedUri, ...prev]);
-      
-      // 2. ML Kit Face Detection & Active Liveness
-      const options: FaceDetectorOptions = {
+      // ML Kit: liveness check on saved photo
+      const mlT = Date.now();
+      const opts: FaceDetectorOptions = {
         performanceMode: 'accurate',
+        classificationMode: 'all',
         landmarkMode: 'none',
         contourMode: 'none',
-        classificationMode: 'all',
       };
-      
-      const faces = await FaceDetection.detect(newSavedUri, options);
-      
+      const faces = await FaceDetection.detect(savedUri, opts);
+      const mlKitMs = Date.now() - mlT;
+
       if (faces.length === 0) {
-        Alert.alert('Liveness Failed ❌', 'No face detected in the image.');
+        Alert.alert('Liveness Failed', 'No face detected.');
         setCapturedPhoto(null);
         return;
       }
       if (faces.length > 1) {
-        Alert.alert('Liveness Failed ❌', 'Multiple faces detected. Please ensure only one person is in frame.');
+        Alert.alert('Liveness Failed', 'Multiple faces detected.');
         setCapturedPhoto(null);
         return;
       }
-      
+
       const face = faces[0];
-      
-      // Active Liveness Checks
-      const leftEyeOpen = face.leftEyeOpenProbability ?? 0;
-      const rightEyeOpen = face.rightEyeOpenProbability ?? 0;
-      
-      if (leftEyeOpen < 0.2 || rightEyeOpen < 0.2) {
-         Alert.alert('Liveness Failed ❌', 'Eyes appear closed (Blink/Spoof attack detected).');
-         setCapturedPhoto(null);
-         return;
+      const leftEye = face.leftEyeOpenProbability ?? 0;
+      const rightEye = face.rightEyeOpenProbability ?? 0;
+      if (leftEye < 0.2 || rightEye < 0.2) {
+        Alert.alert('Liveness Failed', 'Eyes appear closed (possible spoof).');
+        setCapturedPhoto(null);
+        return;
       }
-      
       if (Math.abs(face.headEulerAngleY ?? 0) > 20) {
-         Alert.alert('Liveness Failed ❌', 'Please look directly at the camera.');
-         setCapturedPhoto(null);
-         return;
+        Alert.alert('Liveness Failed', 'Please look directly at the camera.');
+        setCapturedPhoto(null);
+        return;
       }
 
-      // 3. Image Cropping & Preprocessing
-      const resizedPath = await FaceProcessor.cropAndResizeFace(newSavedUri, face.frame);
-      const float32Data = await FaceProcessor.imageToFloat32Array(resizedPath);
-      
-      // 4. ONNX Inference
+      // Preprocessing: crop + bilinear resize + adaptive gamma
+      const prepT = Date.now();
+      const floatData = await FaceProcessor.cropResizeAndNormalize(savedUri, face.frame);
+      const prepMs = Date.now() - prepT;
+
+      // ONNX inference
       const { Tensor } = require('onnxruntime-react-native');
-      const tensor = new Tensor('float32', float32Data, [1, 3, 112, 112]);
-      
-      const startInference = Date.now();
+      const tensor = new Tensor('float32', floatData, [1, 3, 112, 112]);
+      const onnxT = Date.now();
       const results = await onnxSession.run({ 'input.1': tensor });
-      const rawEmbedding = Object.values(results)[0] as any;
-      const embeddingData = rawEmbedding.data as Float32Array;
-      
-      // Normalize
-      const norm = Math.sqrt(embeddingData.reduce((sum, val) => sum + val * val, 0));
-      const finalEmbedding = new Float32Array(embeddingData.map(v => v / (norm || 1)));
-      const endInference = Date.now();
+      const onnxMs = Date.now() - onnxT;
 
-      // 5. Database Logic (Enroll vs Verify)
+      const raw = (Object.values(results)[0] as any).data as Float32Array;
+      const norm = Math.sqrt(raw.reduce((s: number, v: number) => s + v * v, 0));
+      const embedding = new Float32Array(raw.map((v: number) => v / (norm || 1)));
+
       if (action === 'ENROLL') {
-         const newEmpId = enrollName.trim() || `EMP-${Math.floor(Math.random() * 9000) + 1000}`;
-         await Database.saveEmbedding(newEmpId, finalEmbedding);
-         Alert.alert(
-           'User Enrolled 📝', 
-           `Successfully registered face for: ${newEmpId}\nLiveness: Passed ✅`
-         );
-         setEnrollName('');
+        const empId = enrollName.trim() || `EMP-${Math.floor(Math.random() * 9000) + 1000}`;
+        await Database.saveEmbedding(empId, embedding);
+        Alert.alert('Enrolled', `Face registered for: ${empId}\nChallenge: ${completedChallenge} ✅`);
+        setEnrollName('');
       } else {
-         const match = await Database.authenticateUser(finalEmbedding, 0.55); // 0.55 threshold
-         if (match) {
-            Alert.alert(
-              'Authentication Success! ✅', 
-              `Matched Employee: ${match.employeeId}\nSimilarity Score: ${(match.score * 100).toFixed(1)}%\nLiveness: Passed ✅\nInference: ${endInference - startInference}ms`
-            );
-         } else {
-            Alert.alert('Auth Failed ❌', 'No matching face found in the database. Are you enrolled?');
-         }
-      }
+        const dbT = Date.now();
+        const match = await Database.authenticateUser(embedding, 0.60);
+        const dbMs = Date.now() - dbT;
+        const totalMs = Date.now() - t0;
 
-      setCapturedPhoto(null);
+        const bm: Benchmark = { mlKitMs, prepMs, onnxMs, dbMs, totalMs };
+        setBenchmark(bm);
+        setShowBenchmark(true);
+
+        if (match) {
+          await Database.logAttendance({
+            employeeId: match.employeeId,
+            timestamp: Date.now(),
+            similarityScore: match.score,
+            challenge: completedChallenge,
+          });
+          refreshPendingCount();
+
+          Alert.alert(
+            'Authenticated ✅',
+            `Employee: ${match.employeeId}\nScore: ${(match.score * 100).toFixed(1)}%\nChallenge: ${completedChallenge}\nTotal: ${totalMs}ms`,
+          );
+        } else {
+          Alert.alert('Auth Failed', 'No matching face found.');
+        }
+      }
     } catch (err: any) {
-      console.error('Failed to process image:', err);
-      Alert.alert('Error', err.message || 'Verification Failed');
+      Alert.alert('Error', err.message || 'Processing failed');
+    } finally {
+      setCapturedPhoto(null);
     }
   };
 
-  // ─── Render ────────────────────────────────────────────────
-  if (!hasPermission) {
-    return <PermissionScreen onRequest={handleRequestPermission} />;
-  }
+  const handleManualSync = async () => {
+    setSyncMsg('Syncing…');
+    const result = await SyncService.syncPending();
+    refreshPendingCount();
+    setSyncMsg(
+      result.synced > 0
+        ? `Synced ${result.synced} records`
+        : result.errors > 0
+        ? 'Sync failed (no network?)'
+        : 'Nothing to sync',
+    );
+    setTimeout(() => setSyncMsg(''), 4000);
+  };
 
-  if (device == null) {
-    return <NoDeviceScreen />;
-  }
+  const clearDatabase = () => {
+    Alert.alert('Clear All Data', 'Delete all enrolled users?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear', style: 'destructive', onPress: async () => {
+          await Database.clearAllUsers();
+          Alert.alert('Done', 'All users deleted.');
+        },
+      },
+    ]);
+  };
 
-  // --- Gallery Screen ---
+  // ─── Render guards ─────────────────────────────────────────────
+  if (!hasPermission) return <PermissionScreen onRequest={handleRequestPermission} />;
+  if (!device) return <NoDeviceScreen />;
+
+  // Gallery screen
   if (showGallery) {
     return (
       <View style={styles.container}>
@@ -484,11 +527,7 @@ function App(): React.JSX.Element {
         </View>
         <ScrollView contentContainerStyle={styles.galleryGrid}>
           {gallery.map((uri, idx) => (
-            <Image 
-              key={idx} 
-              source={{ uri }} 
-              style={styles.galleryImage} 
-            />
+            <Image key={idx} source={{ uri }} style={styles.galleryImage} />
           ))}
           {gallery.length === 0 && (
             <Text style={styles.emptyText}>No photos saved yet.</Text>
@@ -498,142 +537,158 @@ function App(): React.JSX.Element {
     );
   }
 
-  // --- Preview Screen ---
+  // Preview / enroll-verify screen
   if (capturedPhoto) {
     return (
       <View style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="#000" />
-        <Image 
-          source={{ uri: `file://${capturedPhoto}` }} 
-          style={StyleSheet.absoluteFill} 
+        <Image
+          source={{ uri: `file://${capturedPhoto}` }}
+          style={StyleSheet.absoluteFill}
           resizeMode="cover"
         />
         <View style={styles.previewTopBar}>
-          <Text style={styles.previewTitle}>Photo Preview</Text>
+          <Text style={styles.previewTitle}>Review Photo</Text>
+          {challenge && (
+            <Text style={styles.challengeBadge}>
+              {CHALLENGE_ICONS[challenge]} {challenge} ✅
+            </Text>
+          )}
         </View>
+
+        {/* Benchmark overlay (tap to dismiss) */}
+        {showBenchmark && benchmark && (
+          <TouchableOpacity style={styles.benchmarkCard} onPress={() => setShowBenchmark(false)}>
+            <Text style={styles.benchmarkTitle}>Performance</Text>
+            <Text style={styles.benchmarkRow}>ML Kit   {benchmark.mlKitMs}ms</Text>
+            <Text style={styles.benchmarkRow}>Preproc  {benchmark.prepMs}ms</Text>
+            <Text style={styles.benchmarkRow}>ONNX     {benchmark.onnxMs}ms</Text>
+            <Text style={styles.benchmarkRow}>DB       {benchmark.dbMs}ms</Text>
+            <Text style={[styles.benchmarkRow, styles.benchmarkTotal]}>
+              TOTAL    {benchmark.totalMs}ms {benchmark.totalMs < 1000 ? '✅' : '⚠️'}
+            </Text>
+            <Text style={styles.benchmarkDismiss}>tap to dismiss</Text>
+          </TouchableOpacity>
+        )}
+
         <View style={styles.previewBottomBar}>
-          <TextInput 
-             style={styles.enrollInput}
-             placeholder="Employee Name/ID (optional)"
-             placeholderTextColor="#999"
-             value={enrollName}
-             onChangeText={setEnrollName}
+          <TextInput
+            style={styles.enrollInput}
+            placeholder="Employee Name / ID (for enroll)"
+            placeholderTextColor="#999"
+            value={enrollName}
+            onChangeText={setEnrollName}
           />
-          <View style={{flexDirection: 'row', gap: 10}}>
-             <TouchableOpacity style={styles.retakeButton} onPress={handleRetake}>
-               <Text style={styles.retakeButtonText}>Retake</Text>
-             </TouchableOpacity>
-             <TouchableOpacity style={[styles.verifyButton, {backgroundColor: '#34C759', flex: 1}]} onPress={() => processFace('ENROLL')}>
-               <Text style={styles.verifyButtonText}>Enroll</Text>
-             </TouchableOpacity>
-             <TouchableOpacity style={[styles.verifyButton, {backgroundColor: '#4F8CFF', flex: 1}]} onPress={() => processFace('VERIFY')}>
-               <Text style={styles.verifyButtonText}>Verify</Text>
-             </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <TouchableOpacity style={styles.retakeButton} onPress={handleRetake}>
+              <Text style={styles.retakeButtonText}>Retake</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionButton, { backgroundColor: '#34C759' }]}
+              onPress={() => processFace('ENROLL')}>
+              <Text style={styles.actionButtonText}>Enroll</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionButton, { backgroundColor: '#4F8CFF' }]}
+              onPress={() => processFace('VERIFY')}>
+              <Text style={styles.actionButtonText}>Verify</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </View>
     );
   }
 
-  // --- Main Camera View ---
+  // ─── Main camera view ─────────────────────────────────────────
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-      {/* Camera Preview */}
       <Camera
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
         isActive={!capturedPhoto}
-        photo={true}
+        photo
       />
 
-      {/* Pseudo-Realtime UI Overlays */}
-      {!capturedPhoto && isTracking && faceBounds && (
-        <View style={{
-          position: 'absolute',
-          left: faceBounds.x,
-          top: faceBounds.y,
-          width: faceBounds.width,
-          height: faceBounds.height,
-          borderWidth: 3,
-          borderColor: isAligned ? '#34C759' : '#FF3B30',
-          borderRadius: 12,
-        }} />
+      {/* Face bounding box overlay */}
+      {isTracking && faceBounds && (
+        <View
+          style={{
+            position: 'absolute',
+            left: faceBounds.x,
+            top: faceBounds.y,
+            width: faceBounds.width,
+            height: faceBounds.height,
+            borderWidth: 3,
+            borderColor: isAligned ? '#34C759' : challengeCompleted ? '#FFD60A' : '#FF3B30',
+            borderRadius: 12,
+          }}
+        />
       )}
 
-      {!capturedPhoto && isTracking && (
-        <View style={{
-           position: 'absolute',
-           top: 130, // Pushed down to avoid top bar
-           alignSelf: 'center',
-           backgroundColor: 'rgba(0,0,0,0.7)',
-           paddingHorizontal: 16,
-           paddingVertical: 8,
-           borderRadius: 20
-        }}>
-           <Text style={{color: isAligned ? '#34C759' : '#FF3B30', fontWeight: 'bold', fontSize: 16}}>
-              {livenessMsg}
-           </Text>
+      {/* Challenge card */}
+      {isTracking && challenge && !challengeCompleted && (
+        <View style={styles.challengeCard}>
+          <Text style={styles.challengeIcon}>{CHALLENGE_ICONS[challenge]}</Text>
+          <Text style={styles.challengeText}>{CHALLENGE_PROMPTS[challenge]}</Text>
+        </View>
+      )}
+      {isTracking && challengeCompleted && (
+        <View style={[styles.challengeCard, { backgroundColor: 'rgba(52,199,89,0.85)' }]}>
+          <Text style={styles.challengeIcon}>✅</Text>
+          <Text style={styles.challengeText}>Challenge passed!</Text>
         </View>
       )}
 
-      {/* Start Tracking Button */}
-      {!capturedPhoto && !isTracking && (
-        <TouchableOpacity 
-          style={{
-            position: 'absolute', 
-            bottom: 200, 
-            alignSelf: 'center', 
-            backgroundColor: '#4F8CFF',
-            paddingVertical: 14,
-            paddingHorizontal: 30,
-            borderRadius: 30,
-            elevation: 5,
-            shadowColor: '#000',
-            shadowOpacity: 0.3,
-            shadowRadius: 5
-          }}
-          onPress={() => setIsTracking(true)}
-        >
-          <Text style={{color: '#FFF', fontWeight: 'bold', fontSize: 16}}>Start Real-Time Tracking</Text>
+      {/* Liveness status pill */}
+      {isTracking && (
+        <View style={styles.livenessPill}>
+          <Text style={[styles.livenessPillText, { color: isAligned ? '#34C759' : '#FFFFFF' }]}>
+            {livenessMsg}
+          </Text>
+        </View>
+      )}
+
+      {/* Start tracking button */}
+      {!isTracking && (
+        <TouchableOpacity style={styles.startTrackingBtn} onPress={() => setIsTracking(true)}>
+          <Text style={styles.startTrackingText}>Start Face Auth</Text>
         </TouchableOpacity>
       )}
 
-      {/* Top Bar */}
+      {/* Top bar */}
       <View style={styles.topBar}>
-        <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'}}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
           <View>
             <Text style={styles.topBarTitle}>NHAI Face Auth</Text>
-            <Text style={styles.topBarSubtitle}>Offline Mode • Camera Ready</Text>
+            <Text style={styles.topBarSubtitle}>
+              Offline Mode{pendingCount > 0 ? ` · ${pendingCount} pending sync` : ''}
+            </Text>
+            {syncMsg !== '' && <Text style={styles.syncMsg}>{syncMsg}</Text>}
           </View>
           <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', flex: 1 }}>
-            {!onnxSession && (
-              <TouchableOpacity 
-                style={[styles.onnxButton, {backgroundColor: '#4F8CFF'}]} 
+            {!onnxSession ? (
+              <TouchableOpacity
+                style={[styles.topBtn, { backgroundColor: '#4F8CFF' }]}
                 onPress={initONNX}
-                disabled={isInitializingONNX}
-              >
-                <Text style={styles.onnxButtonText}>
-                  {isInitializingONNX ? 'Load...' : 'Init ONNX'}
+                disabled={isInitializingONNX}>
+                <Text style={styles.topBtnText}>
+                  {isInitializingONNX ? 'Loading…' : 'Init ONNX'}
                 </Text>
               </TouchableOpacity>
-            )}
-            
-            {onnxSession && (
+            ) : (
               <>
-                <TouchableOpacity 
-                  style={[styles.onnxButton, {backgroundColor: '#FF9500'}]} 
-                  onPress={testDatabase}
-                >
-                  <Text style={styles.onnxButtonText}>Test DB</Text>
+                <TouchableOpacity
+                  style={[styles.topBtn, { backgroundColor: '#30D158' }]}
+                  onPress={handleManualSync}>
+                  <Text style={styles.topBtnText}>Sync{pendingCount > 0 ? ` (${pendingCount})` : ''}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.onnxButton, {backgroundColor: '#FF3B30'}]} 
-                  onPress={clearDatabase}
-                >
-                  <Text style={styles.onnxButtonText}>Clear DB</Text>
+                <TouchableOpacity
+                  style={[styles.topBtn, { backgroundColor: '#FF3B30' }]}
+                  onPress={clearDatabase}>
+                  <Text style={styles.topBtnText}>Clear DB</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -641,313 +696,168 @@ function App(): React.JSX.Element {
         </View>
       </View>
 
-      <TouchableOpacity 
-        style={styles.galleryFAB} 
-        onPress={() => setShowGallery(true)}
-      >
-        <Text style={styles.galleryFABText}>🖼️</Text>
+      {/* Gallery FAB */}
+      <TouchableOpacity style={styles.galleryFAB} onPress={() => setShowGallery(true)}>
+        <Text style={{ fontSize: 20 }}>🖼️</Text>
       </TouchableOpacity>
 
-      {/* Bottom Controls */}
+      {/* Bottom controls */}
       <View style={styles.bottomBar}>
-        <View style={styles.statusRow}>
-          <View style={styles.statusDot} />
-          <Text style={styles.statusText}>Camera Active</Text>
-        </View>
-        
         <View style={styles.captureControls}>
-          <TouchableOpacity style={styles.flipButtonSmall} onPress={toggleCamera}>
-            <Text style={styles.flipButtonText}>🔄</Text>
+          <TouchableOpacity
+            style={styles.flipBtn}
+            onPress={() => setCameraPosition(p => p === 'front' ? 'back' : 'front')}>
+            <Text style={{ fontSize: 20, color: '#FFF' }}>🔄</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity style={styles.captureButton} onPress={takePhoto}>
-            <View style={styles.captureButtonInner} />
+          <TouchableOpacity style={styles.captureButton} onPress={takePhotoSilent}>
+            <View style={styles.captureInner} />
           </TouchableOpacity>
-
-          <View style={styles.spacer} />
+          <View style={{ width: 50 }} />
         </View>
-
-        <Text style={styles.deviceInfo}>
-          {device.name} ({cameraPosition})
-        </Text>
+        <Text style={styles.deviceInfo}>{device.name} ({cameraPosition})</Text>
       </View>
     </View>
   );
 }
 
-// ─── Styles ────────────────────────────────────────────────────
+// ─── Styles ───────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  // Permission Screen
+  container: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+
+  // Permission
   permissionContainer: {
-    flex: 1,
-    backgroundColor: '#0D0D0D',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 32,
+    flex: 1, backgroundColor: '#0D0D0D', justifyContent: 'center',
+    alignItems: 'center', paddingHorizontal: 32,
   },
-  iconContainer: {
-    marginBottom: 24,
-  },
-  lockIcon: {
-    fontSize: 64,
-    marginBottom: 16,
-  },
-  permissionTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  permissionDescription: {
-    fontSize: 15,
-    color: '#999999',
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 32,
-  },
-  permissionButton: {
-    backgroundColor: '#4F8CFF',
-    paddingVertical: 14,
-    paddingHorizontal: 40,
-    borderRadius: 12,
-  },
-  permissionButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  // Camera Overlay
+  lockIcon: { fontSize: 64, marginBottom: 16 },
+  permissionTitle: { fontSize: 24, fontWeight: '700', color: '#FFF', marginBottom: 12, textAlign: 'center' },
+  permissionDescription: { fontSize: 15, color: '#999', textAlign: 'center', lineHeight: 22, marginBottom: 32 },
+  permissionButton: { backgroundColor: '#4F8CFF', paddingVertical: 14, paddingHorizontal: 40, borderRadius: 12 },
+  permissionButtonText: { color: '#FFF', fontSize: 16, fontWeight: '600' },
+
+  // Top bar
   topBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
+    position: 'absolute', top: 0, left: 0, right: 0,
     paddingTop: Platform.OS === 'android' ? 48 : 60,
-    paddingBottom: 16,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingBottom: 12, paddingHorizontal: 16,
+    backgroundColor: 'rgba(0,0,0,0.55)',
   },
-  topBarTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '700',
+  topBarTitle: { color: '#FFF', fontSize: 18, fontWeight: '700' },
+  topBarSubtitle: { color: '#4F8CFF', fontSize: 12, fontWeight: '500', marginTop: 2 },
+  syncMsg: { color: '#30D158', fontSize: 11, marginTop: 2 },
+  topBtn: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: 8 },
+  topBtnText: { color: '#FFF', fontSize: 12, fontWeight: '700' },
+
+  // Challenge card
+  challengeCard: {
+    position: 'absolute', top: 160, alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.82)', borderRadius: 20,
+    paddingHorizontal: 28, paddingVertical: 14, alignItems: 'center',
+    borderWidth: 1.5, borderColor: '#FFD60A',
   },
-  topBarSubtitle: {
-    color: '#4F8CFF',
-    fontSize: 13,
-    fontWeight: '500',
-    marginTop: 2,
+  challengeIcon: { fontSize: 36, marginBottom: 6 },
+  challengeText: { color: '#FFD60A', fontSize: 18, fontWeight: '800', letterSpacing: 0.5 },
+
+  // Liveness pill
+  livenessPill: {
+    position: 'absolute', top: 270, alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingHorizontal: 16, paddingVertical: 7, borderRadius: 20,
   },
+  livenessPillText: { fontWeight: '700', fontSize: 15 },
+
+  // Start button
+  startTrackingBtn: {
+    position: 'absolute', bottom: 200, alignSelf: 'center',
+    backgroundColor: '#4F8CFF', paddingVertical: 14, paddingHorizontal: 32,
+    borderRadius: 30, elevation: 5,
+  },
+  startTrackingText: { color: '#FFF', fontWeight: '700', fontSize: 16 },
+
+  // Gallery FAB
   galleryFAB: {
-    position: 'absolute',
-    top: Platform.OS === 'android' ? 60 : 70,
-    right: 20,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    position: 'absolute', top: Platform.OS === 'android' ? 58 : 70, right: 16,
+    width: 42, height: 42, borderRadius: 21,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    justifyContent: 'center', alignItems: 'center',
   },
-  galleryFABText: {
-    fontSize: 20,
-  },
+
+  // Bottom bar
   bottomBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    paddingBottom: 40,
-    paddingTop: 20,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center',
-  },
-  statusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#34C759',
-    marginRight: 8,
-  },
-  statusText: {
-    color: '#34C759',
-    fontSize: 14,
-    fontWeight: '600',
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    paddingBottom: 40, paddingTop: 16, paddingHorizontal: 20,
+    backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center',
   },
   captureControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: '100%',
-    marginBottom: 16,
+    flexDirection: 'row', alignItems: 'center',
+    justifyContent: 'center', width: '100%', marginBottom: 12,
   },
-  flipButtonSmall: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 30,
-  },
-  flipButtonText: {
-    color: '#FFFFFF',
-    fontSize: 20,
-  },
-  spacer: {
-    width: 50,
-    marginLeft: 30,
+  flipBtn: {
+    backgroundColor: 'rgba(255,255,255,0.15)', width: 50, height: 50,
+    borderRadius: 25, justifyContent: 'center', alignItems: 'center', marginRight: 30,
   },
   captureButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    borderWidth: 4,
-    borderColor: '#FFFFFF',
-    justifyContent: 'center',
-    alignItems: 'center',
+    width: 80, height: 80, borderRadius: 40,
+    borderWidth: 4, borderColor: '#FFF', justifyContent: 'center', alignItems: 'center',
   },
-  captureButtonInner: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#FFFFFF',
-  },
-  deviceInfo: {
-    color: '#666',
-    fontSize: 12,
-  },
-  // Preview Screen
+  captureInner: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#FFF' },
+  deviceInfo: { color: '#555', fontSize: 12 },
+
+  // Preview screen
   previewTopBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
+    position: 'absolute', top: 0, left: 0, right: 0,
     paddingTop: Platform.OS === 'android' ? 48 : 60,
-    paddingBottom: 16,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    alignItems: 'center',
+    paddingBottom: 12, paddingHorizontal: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center',
   },
-  previewTitle: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '600',
+  previewTitle: { color: '#FFF', fontSize: 18, fontWeight: '600' },
+  challengeBadge: {
+    color: '#34C759', fontSize: 13, fontWeight: '600', marginTop: 4,
+    backgroundColor: 'rgba(52,199,89,0.15)', paddingHorizontal: 10,
+    paddingVertical: 3, borderRadius: 10,
   },
   previewBottomBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    paddingBottom: 40,
-    paddingTop: 20,
-    paddingHorizontal: 20,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'stretch',
-  },
-  retakeButton: {
-    paddingVertical: 14,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-  },
-  retakeButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  verifyButton: {
-    paddingVertical: 14,
-    paddingHorizontal: 30,
-    borderRadius: 12,
-    backgroundColor: '#4F8CFF',
-  },
-  verifyButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  // Gallery Screen
-  galleryHeader: {
-    width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: Platform.OS === 'android' ? 48 : 60,
-    paddingBottom: 16,
-    paddingHorizontal: 20,
-    backgroundColor: '#111',
-  },
-  galleryTitle: {
-    color: '#FFF',
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  closeButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    borderRadius: 8,
-  },
-  closeButtonText: {
-    color: '#FFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  galleryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    padding: 2,
-    paddingBottom: 40,
-  },
-  galleryImage: {
-    width: GALLERY_IMAGE_SIZE,
-    height: GALLERY_IMAGE_SIZE,
-    margin: 2,
-    borderRadius: 4,
-    backgroundColor: '#333',
-  },
-  emptyText: {
-    color: '#666',
-    fontSize: 16,
-    marginTop: 40,
-    textAlign: 'center',
-    width: '100%',
-  },
-  onnxButton: {
-    backgroundColor: '#4F8CFF',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  onnxButtonText: {
-    color: '#FFF',
-    fontSize: 12,
-    fontWeight: '700',
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    paddingBottom: 40, paddingTop: 16, paddingHorizontal: 16,
+    backgroundColor: 'rgba(0,0,0,0.65)',
   },
   enrollInput: {
-    backgroundColor: '#333',
-    color: '#FFF',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    width: '100%',
+    backgroundColor: '#333', color: '#FFF', borderRadius: 8,
+    padding: 11, marginBottom: 10, width: '100%',
   },
+  retakeButton: {
+    paddingVertical: 13, paddingHorizontal: 22, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  retakeButtonText: { color: '#FFF', fontSize: 15, fontWeight: '600' },
+  actionButton: { flex: 1, paddingVertical: 13, borderRadius: 10, alignItems: 'center' },
+  actionButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700' },
+
+  // Benchmark overlay
+  benchmarkCard: {
+    position: 'absolute', top: 120, alignSelf: 'center',
+    backgroundColor: 'rgba(15,15,15,0.92)',
+    borderRadius: 16, paddingHorizontal: 24, paddingVertical: 16,
+    borderWidth: 1, borderColor: '#333', minWidth: 210,
+  },
+  benchmarkTitle: { color: '#FFF', fontWeight: '700', fontSize: 14, marginBottom: 8 },
+  benchmarkRow: { color: '#AAA', fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', marginBottom: 3 },
+  benchmarkTotal: { color: '#34C759', fontWeight: '700', marginTop: 4 },
+  benchmarkDismiss: { color: '#555', fontSize: 11, marginTop: 8, textAlign: 'center' },
+
+  // Gallery screen
+  galleryHeader: {
+    width: '100%', flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: Platform.OS === 'android' ? 48 : 60,
+    paddingBottom: 14, paddingHorizontal: 20, backgroundColor: '#111',
+  },
+  galleryTitle: { color: '#FFF', fontSize: 20, fontWeight: '700' },
+  closeButton: { paddingVertical: 6, paddingHorizontal: 12, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 8 },
+  closeButtonText: { color: '#FFF', fontSize: 14, fontWeight: '600' },
+  galleryGrid: { flexDirection: 'row', flexWrap: 'wrap', padding: 2, paddingBottom: 40 },
+  galleryImage: { width: GALLERY_IMAGE_SIZE, height: GALLERY_IMAGE_SIZE, margin: 2, borderRadius: 4, backgroundColor: '#333' },
+  emptyText: { color: '#666', fontSize: 16, marginTop: 40, textAlign: 'center', width: '100%' },
 });
 
 export default App;
