@@ -1,22 +1,38 @@
-# Python Virtual Environments
+# Python virtual environments
 facerec310-env/
 venv/
 env/
+.venv/
 
-# Python Cache and Compiled Files
+# Python cache and compiled files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# Environments
-.env
+# Python accuracy harness output
+accuracy_results.json
 
-# Test Images & Output
+# Environments / secrets
+.env
+.env.local
+
+# Prototype test images and output
 registered_users/
 output_detected.jpg
+image1.png
 *.log
 
-# OS Generated Files
+# Root-level stray lockfile (app lockfile lives in FaceAuthApp/)
+/package-lock.json
+/package.json
+
+# OS generated files
 .DS_Store
+.DS_Store?
 Thumbs.db
+ehthumbs.db
+
+# Editor
+.vscode/settings.json
+*.swp

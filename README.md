@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛣️ NHAI FaceAuth
+# NHAI FaceAuth
 
 ### Offline Facial Recognition & Liveness Detection for Field Personnel
 
@@ -12,14 +12,14 @@ Built for **NHAI Hackathon 7.0** — designed to integrate seamlessly into the D
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![ONNX Runtime](https://img.shields.io/badge/ONNX_Runtime-1.19-005CED?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 [![Platform](https://img.shields.io/badge/Platform-Android_|_iOS-success)](https://reactnative.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#-license)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
 [![Offline First](https://img.shields.io/badge/Network-100%25_Offline-orange)]()
 
 </div>
 
 ---
 
-## 📖 Overview
+## Overview
 
 NHAI FaceAuth authenticates field personnel using **facial recognition** and **active liveness detection** entirely on-device — no internet connection required. It is engineered for **standard mid-range phones** (Android 8.0+ / iOS 12+, 3 GB RAM) operating in remote highway zones with little or no connectivity.
 
@@ -29,198 +29,70 @@ When the network returns, attendance records sync to AWS and local data is purge
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 | | Feature | Description |
 |---|---|---|
 | 🔒 | **100% Offline** | Face matching, liveness, and storage run entirely on-device. No cloud calls during authentication. |
 | 👁️ | **Active Liveness** | Random challenge-response (**blink · turn left · turn right**) defeats photo & screen spoofing. |
-| 🧠 | **Lightweight Edge AI** | MobileFaceNet ONNX model — **13.6 MB**, quantizable to **~3.5 MB** (INT8). |
+| 🧠 | **Lightweight Edge AI** | MobileFaceNet ONNX model — **13.6 MB** FP32, quantizable to **~3.5 MB** INT8. |
 | ⚡ | **Sub-Second Auth** | End-to-end recognition + liveness in **< 1 second** on mid-range hardware. |
 | 🌗 | **Lighting Robust** | Adaptive gamma correction handles harsh sunlight, low light, and shadows. |
-| 🔐 | **Encrypted Biometrics** | Face embeddings stored with **AES-256** encryption at rest. |
+| 🔐 | **Encrypted Biometrics** | Face embeddings stored with **AES-256-CBC** encryption at rest. |
 | ☁️ | **Sync & Purge** | Auto-sync attendance to AWS on connectivity restore, then purge local records. |
 | 🧩 | **Drop-in SDK** | Clean `FaceAuthSDK` API for one-line integration into Datalake 3.0. |
-| 📊 | **Live Benchmarks** | On-device overlay shows per-stage timing (ML Kit / preprocess / ONNX / DB). |
+| 📊 | **Live Benchmarks** | Per-stage timing overlay after every verification (ML Kit / preprocess / ONNX / DB). |
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     React Native (TypeScript)                    │
+│                React Native — 100% Offline                       │
 │                                                                  │
 │   ┌──────────────┐   ┌─────────────────┐   ┌─────────────────┐  │
-│   │  Enroll /    │   │ FaceProcessor.ts│   │  FaceAuthSDK.ts │  │
-│   │  Verify      │   │ Crop · Resize   │   │  enrollFromPhoto │  │
-│   │  Screens     │   │ Gamma · NCHW    │   │  verifyFromPhoto │  │
-│   └─────┬────────┘   └────────┬────────┘   └────────┬────────┘  │
-│         │                     │                      │           │
-└─────────┼─────────────────────┼──────────────────────┼──────────┘
-          │                   │                       │
-    ┌─────▼─────┐      ┌──────▼──────┐        ┌───────▼────────┐
-    │  ML Kit   │      │ ONNX Runtime│        │   SQLite +     │
-    │  (native) │      │   (C++)     │        │   AES-256      │
-    │ blink/yaw │      │ MobileFaceNet│        │  embeddings +  │
-    │  /turn    │      │ 512-d vector │        │ attendance_log │
-    └───────────┘      └─────────────┘        └───────┬────────┘
-                                                       │
-                                              ┌────────▼─────────┐
-                                              │   SyncService    │
-                                              │ NetInfo → AWS →  │
-                                              │  purge (30 days) │
-                                              └──────────────────┘
+│   │  Enroll /    │   │ FaceProcessor   │   │  FaceAuthSDK    │  │
+│   │  Verify      │   │ Crop · Resize   │   │  enroll         │  │
+│   │  Screens     │   │ Gamma · NCHW    │   │  authenticate   │  │
+│   └──────┬───────┘   └───────┬─────────┘   └────────┬────────┘  │
+│          │                   │                       │           │
+└──────────┼───────────────────┼───────────────────────┼──────────┘
+           │                   │                       │
+     ┌─────▼─────┐      ┌──────▼──────┐        ┌───────▼────────┐
+     │  ML Kit   │      │ ONNX Runtime│        │   SQLite +     │
+     │  (native) │      │   (C++)     │        │   AES-256      │
+     │ blink/yaw │      │ MobileFaceNet│       │  employees +   │
+     │  /pitch   │      │ 512-d vector │       │ attendance_log │
+     └───────────┘      └─────────────┘        └───────┬────────┘
+                                                        │
+                                               ┌────────▼─────────┐
+                                               │   SyncService    │
+                                               │ NetInfo → AWS →  │
+                                               │  purge (30 days) │
+                                               └──────────────────┘
 ```
 
-**Two-stage pipeline:** Lightweight ML Kit runs continuously for real-time UI feedback (bounding box, liveness challenges). The heavy ONNX embedding inference fires only once — at the capture moment — keeping the app responsive on mid-range CPUs.
+**Two-stage pipeline:** Lightweight ML Kit runs continuously for real-time UI feedback (bounding box, liveness challenges). The ONNX embedding inference fires **once** — at the capture moment — keeping the app responsive on mid-range CPUs.
 
 ---
 
-## 🧰 Tech Stack
-
-| Concern | Technology | Notes |
-|---|---|---|
-| Framework | React Native `0.76.9` | Cross-platform Android + iOS |
-| Camera | `react-native-vision-camera` | Photo capture (no frame processors) |
-| Face Detection | `@react-native-ml-kit/face-detection` | Eye / smile / head-pose probabilities |
-| Embedding Model | `w600k_mbf.onnx` (MobileFaceNet) | Input `1×3×112×112`, output 512-d vector |
-| Inference | `onnxruntime-react-native` | CPU-only, no GPU required |
-| Image Decode | `jpeg-js` + `base64-js` | Pure-JS JPEG decode for crop pipeline |
-| Local DB | `react-native-sqlite-storage` | `registered_users` + `attendance_log` |
-| Encryption | `crypto-js` | AES-256 for embeddings at rest |
-| Connectivity | `@react-native-community/netinfo` | Triggers sync on network restore |
-
-> **Open-source only** — every dependency is Apache 2.0 / MIT licensed. No proprietary SDKs, no additional licenses required.
-
----
-
-## 📁 Project Structure
-
-```
-FaceAuth-NHAI-Hackathon-7.0/
-├── FaceAuthApp/                          # React Native mobile app
-│   ├── App.tsx                           # Shell: SafeAreaProvider + AppProvider + NavigationContainer
-│   ├── context/AppContext.tsx            # Global state: ONNX init, settings, enrolled/pending counts
-│   ├── navigation/
-│   │   ├── types.ts                      # RootStackParamList, TabParamList, typed screen props
-│   │   └── RootNavigator.tsx             # Stack (Boot → Tabs) + modal Enroll + Verify
-│   ├── screens/
-│   │   ├── BootScreen.tsx                # Camera permission + "Initialize System" → Tabs
-│   │   ├── HomeScreen.tsx                # Dashboard: counts, Enroll/Verify CTA, sync
-│   │   ├── EnrollScreen.tsx              # Camera → identity form → embed → success
-│   │   ├── VerifyScreen.tsx              # Camera → match → result card with timing breakdown
-│   │   ├── HistoryScreen.tsx             # Attendance log; pull-to-refresh syncs AWS
-│   │   ├── UsersScreen.tsx               # Enrolled employees + delete
-│   │   └── SettingsScreen.tsx            # Threshold, liveness, AWS endpoint, danger zone
-│   ├── components/
-│   │   ├── ui.tsx                        # Screen, Header, Card, Button, Stat, Pill, EmptyState…
-│   │   └── FaceCamera.tsx                # Camera + challenge-response liveness (shared by screens)
-│   ├── core/faceMath.ts                  # PURE logic — unit-tested, no native imports
-│   ├── services/SettingsStore.ts         # AsyncStorage settings persistence
-│   ├── FaceProcessor.ts                  # Crop → bilinear resize → gamma → NCHW tensor
-│   ├── Database.ts                       # SQLite: AES-256 embeddings + attendance_log
-│   ├── SyncService.ts                    # NetInfo → AWS sync → purge
-│   ├── FaceAuthSDK.ts                    # High-level SDK + Datalake 3.0 low-level API
-│   ├── theme.ts                          # Design tokens (colors, spacing, radius, font)
-│   └── android/app/src/main/assets/
-│       └── w600k_mbf.onnx                # MobileFaceNet model (13.6 MB)
-├── accuracy_benchmark.py                 # FAR/FRR/EER accuracy harness
-├── quantize_model.py                     # INT8 quantization → ~3.5 MB
-├── aws-backend/                          # Lambda + mock server
-├── CLAUDE.md                             # Full technical context for contributors
-└── README.md
-```
-
-### App screens at a glance
-
-| Screen | Role |
-|---|---|
-| **Boot** | Permission check + ONNX warm-up gate. Replaces itself with Tabs on success. |
-| **Home** | Dashboard: enrolled count, pending-sync count, Enroll / Verify CTA buttons. |
-| **Enroll** | Multi-step modal: `FaceCamera` → employee ID form → `enrollFromPhoto()` → result. |
-| **Verify** | Modal: `FaceCamera` → `verifyFromPhoto()` → identity result card with per-stage timings. |
-| **History** | Attendance log (FlatList, newest first). Pull-to-refresh triggers AWS sync. |
-| **Users** | Enrolled employees list. Tap ✕ to delete with Alert confirmation. |
-| **Settings** | Match threshold, liveness toggle, spoof toggle, camera position, AWS endpoint, danger zone. |
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- **Node.js** 18 or higher
-- **Android Studio** (SDK 35, NDK 26.1, Build Tools 35, Java 17)
-- A **physical Android device** (camera is unavailable on emulators)
-- USB debugging enabled
-
-> 💡 **No Android Studio / USB?** Use [Expo EAS Build](https://docs.expo.dev/build/setup/) to compile a cloud APK and install it via QR code over WiFi.
-
-### Installation
-
-```bash
-cd FaceAuth-NHAI-Hackathon-7.0/FaceAuthApp
-npm install
-
-# iOS only:
-cd ios && pod install && cd ..
-```
-
-### Run on Android
-
-```bash
-# Terminal 1 — start the Metro bundler
-npm start
-
-# Terminal 2 — build & deploy
-npm run android
-```
-
-### Run on iOS
-
-The model is already bundled into the iOS target (`ios/FaceAuthApp/w600k_mbf.onnx`,
-registered in `project.pbxproj`), and the app loads it from the main bundle on iOS.
-
-```bash
-cd ios && pod install && cd ..
-npm run ios
-```
-
----
-
-## 🗜️ Model Quantization (Optional)
-
-Shrink the model from **13.6 MB → ~3.5 MB** with 2–4× faster inference and <1% accuracy loss:
-
-```bash
-pip install onnxruntime onnx
-python quantize_model.py
-```
-
-Then update `App.tsx`:
-
-```typescript
-const MODEL_NAME = 'w600k_mbf_int8.onnx';
-```
-
----
-
-## 🔄 How It Works
+## How It Works
 
 ```
  ┌──────────────────────────────────────────────────────────────┐
- │  1. User taps "Start Face Auth"                              │
- │  2. ML Kit detects face → random challenge assigned         │
- │             👁 BLINK   ↩ TURN LEFT   ↪ TURN RIGHT             │
- │  3. User performs challenge (verified live)                 │
- │  4. 3 stable aligned frames → auto-capture                  │
+ │  1. User taps "Enroll Employee" or "Verify & Check-In"       │
+ │  2. ML Kit detects face → random challenge assigned          │
+ │             👁 BLINK   ↩ TURN LEFT   ↪ TURN RIGHT            │
+ │  3. User performs challenge (verified live)                  │
+ │  4. 3 stable aligned frames (yaw<15° pitch<18° roll<18°)     │
+ │     → auto-capture (no manual button)                        │
  │  5. Crop face → resize 112×112 → gamma → ONNX → 512-d vector │
  └──────────────────────────────────────────────────────────────┘
               │                              │
         ┌─────▼─────┐                  ┌─────▼──────┐
         │  ENROLL   │                  │   VERIFY   │
-        │  encrypt  │                  │  cosine ≥  │
+        │  AES-256  │                  │  cosine ≥  │
         │  → SQLite │                  │   0.60     │
         └───────────┘                  └─────┬──────┘
                                              │ match
@@ -233,98 +105,345 @@ const MODEL_NAME = 'w600k_mbf_int8.onnx';
 
 ---
 
-## 🧩 Datalake 3.0 Integration
+## Tech Stack
 
-The `FaceAuthSDK` exposes a minimal surface the host app can call directly:
+| Concern | Technology | Notes |
+|---|---|---|
+| Framework | React Native `0.76.9` | Cross-platform Android + iOS; New Architecture compatible |
+| Camera | `react-native-vision-camera` ^4.7.3 | Photo capture; no frame processors needed |
+| Face Detection | `@react-native-ml-kit/face-detection` ^2.0.1 | Eye open prob, yaw/pitch/roll, bbox |
+| Embedding Model | `w600k_mbf.onnx` (MobileFaceNet) | Input `1×3×112×112` NCHW; output 512-d vector |
+| Inference | `onnxruntime-react-native` ^1.19.2 | CPU-only C++ — no GPU required |
+| Image Resize | `@bam.tech/react-native-image-resizer` | Native one-pass downscale before JS pixel work |
+| Image Decode | `jpeg-js` + `base64-js` | Pure-JS JPEG decode for crop + spoof pipeline |
+| Local DB | `react-native-sqlite-storage` ^6.0.1 | `employees` + `attendance_log`; forward-migration safe |
+| Encryption | `crypto-js` ^4.2.0 | AES-256-CBC for embeddings at rest |
+| Connectivity | `@react-native-community/netinfo` ^11.3.1 | Triggers sync on network restore |
+| Navigation | `@react-navigation/native` + `native-stack` + `bottom-tabs` | Typed stack + tab navigator |
+| Settings | `@react-native-async-storage/async-storage` | Persistent app settings |
 
-```typescript
-import { FaceAuthSDK } from './FaceAuthSDK';
+> **Open-source only** — every dependency is Apache 2.0 / MIT licensed. No proprietary SDKs or additional licenses required.
 
-// Once, after creating the ONNX session
-await FaceAuthSDK.initialize(onnxSession);
+---
 
-// Enroll a field employee
-await FaceAuthSDK.enroll(imageUri, faceBounds, 'EMP-1234');
+## Repository Structure
 
-// Authenticate at attendance time
-const result = await FaceAuthSDK.authenticate(imageUri, faceBounds, 'BLINK');
-if (result.success) {
-  console.log(`✅ ${result.employeeId} — ${(result.score * 100).toFixed(1)}%`);
-}
-
-// Sync pending records (also runs automatically on connectivity)
-await FaceAuthSDK.syncNow();
+```
+FaceAuth-NHAI-Hackathon-7.0/
+│
+├── FaceAuthApp/                          # React Native mobile app (TypeScript)
+│   ├── App.tsx                           # Shell: SafeAreaProvider + AppProvider + NavigationContainer
+│   ├── index.js                          # RN entry point
+│   │
+│   ├── context/
+│   │   └── AppContext.tsx                # ONNX session, settings, enrolled/pending counts, syncNow
+│   │
+│   ├── navigation/
+│   │   ├── types.ts                      # Typed RootStackParamList + TabParamList
+│   │   └── RootNavigator.tsx             # NativeStack (Boot → Tabs) + Enroll/Verify modals
+│   │
+│   ├── screens/
+│   │   ├── BootScreen.tsx                # Camera permission gate + ONNX warm-up → Tabs
+│   │   ├── HomeScreen.tsx                # Dashboard: enrolled count, pending sync, CTA buttons
+│   │   ├── EnrollScreen.tsx              # Multi-step: camera → form → SDK → result
+│   │   ├── VerifyScreen.tsx              # Camera → SDK match → result card with timing breakdown
+│   │   ├── HistoryScreen.tsx             # Attendance log FlatList; pull-to-refresh syncs AWS
+│   │   ├── UsersScreen.tsx               # Enrolled employees list; delete with Alert confirm
+│   │   └── SettingsScreen.tsx            # Threshold, liveness, spoof, camera, AWS endpoint
+│   │
+│   ├── components/
+│   │   ├── FaceCamera.tsx                # Reusable camera + challenge-response liveness component
+│   │   ├── Icon.tsx                      # Pure-View icon set (no image assets / no rebuild needed)
+│   │   └── ui.tsx                        # Screen, Header, Card, Button, Stat, Pill, Row, EmptyState
+│   │
+│   ├── core/
+│   │   └── faceMath.ts                   # PURE logic — no native imports, fully unit-tested
+│   │                                     # cosineSimilarity · l2Normalize · gammaFor ·
+│   │                                     # spoofVerdict · evaluateChallenge
+│   │
+│   ├── services/
+│   │   └── SettingsStore.ts              # AsyncStorage: AppSettings load / save / update
+│   │
+│   ├── FaceProcessor.ts                  # Crop → bilinear 112×112 → adaptive gamma → NCHW tensor
+│   ├── SpoofDetector.ts                  # Passive texture anti-spoof (sharpness / glare / brightness)
+│   ├── Database.ts                       # SQLite: AES-256 embeddings + attendance_log; migrations
+│   ├── SyncService.ts                    # NetInfo listener → AWS POST → mark synced → purge
+│   ├── FaceAuthSDK.ts                    # Public SDK: enrollFromPhoto · verifyFromPhoto · syncNow
+│   ├── theme.ts                          # Design tokens: colors, spacing, radius, font
+│   │
+│   ├── __tests__/
+│   │   └── faceMath.test.ts              # 25 assertions over core algorithms (Node/Jest, no mocks)
+│   │
+│   ├── android/app/src/main/assets/
+│   │   └── w600k_mbf.onnx                # MobileFaceNet model (13.6 MB)
+│   └── ios/FaceAuthApp/
+│       └── w600k_mbf.onnx                # Same model — registered in project.pbxproj
+│
+├── aws-backend/                          # Serverless sync backend
+│   ├── lambda_handler.py                 # Lambda: validate payload → write to DynamoDB
+│   ├── serverless.yml                    # One-command deploy: Lambda + API Gateway + DynamoDB
+│   ├── mock_server.py                    # Zero-dependency local HTTP server for offline demos
+│   └── README.md                         # Deploy + config instructions
+│
+├── docs/
+│   ├── ARCHITECTURE.md                   # System architecture with Mermaid diagrams
+│   ├── BENCHMARKS.md                     # Performance and accuracy target tables
+│   └── SUBMISSION.md                     # Complete hackathon submission document
+│
+├── accuracy_benchmark.py                 # FAR / FRR / EER / accuracy harness for the ONNX model
+├── quantize_model.py                     # INT8 dynamic quantization (13.6 MB → ~3.5 MB)
+│
+│   # ── Python research prototypes (webcam-only, not on-device) ──────────
+│   # Their algorithms are now implemented in TypeScript (core/faceMath.ts,
+│   # SpoofDetector.ts). These files are kept for reference only.
+├── blink_detection.py
+├── smile_detection.py
+├── head_pose_detection.py
+├── passive_spoof_detection.py
+├── depth_liveness.py
+├── combined_pipeline.py
+├── compare_faces.py
+├── register_user.py
+├── benchmark_pipeline.py
+└── test_facenet.py
+│
+├── CLAUDE.md                             # Full technical context for contributors
+├── LICENSE                               # MIT + third-party license inventory
+└── README.md                             # This file
 ```
 
 ---
 
-## 📊 Performance
+## App Screens
 
-Measured on a mid-range device (Snapdragon 6-series class, 4 GB RAM):
-
-| Stage | Time |
+| Screen | Role |
 |---|---|
-| ML Kit face detection | ~120 ms |
-| Preprocessing (crop + resize + gamma) | ~40 ms |
-| ONNX inference (512-d embedding) | ~90 ms |
-| Database match (cosine similarity) | ~10 ms |
-| **Total end-to-end** | **< 1 second** ✅ |
-
-> Live timing is visible in-app via the benchmark overlay after each verification.
-
----
-
-## 🔐 Security
-
-- **AES-256** encryption of all face embeddings at rest in SQLite.
-- **No raw biometric images** are transmitted — only mathematical embeddings.
-- **On-device processing** — camera frames never leave the phone.
-- **Sync & purge** — attendance records are removed locally after successful AWS upload.
-
-> **Production note:** the demo derives its AES key from a constant. For deployment, derive the key from **Android Keystore / iOS Secure Enclave** (see `Database.ts`).
+| **Boot** | Checks camera permission, initialises ONNX session (one warm-up inference), then replaces itself with the tab navigator. |
+| **Home** | Dashboard: enrolled employee count, pending-sync count, last sync message. "Enroll Employee" and "Verify & Check-In" CTA cards. Manual sync button. |
+| **Enroll** | Modal — four phases: `FaceCamera` liveness capture → analyzing spinner → employee ID/name/designation form → result (or retry on error). Embedding computed at capture time, before the form. |
+| **Verify** | Modal — `FaceCamera` liveness capture → identity match → result card with employee details, confidence %, and per-stage timing breakdown. |
+| **History** | Attendance log (newest first). Shows employee name, timestamp, match confidence, liveness challenge. Pull-to-refresh triggers AWS sync. |
+| **Users** | Enrolled employees list with name, designation, enrolled date. Tap × to delete (Alert confirm). Navigate to Enroll for new registrations. |
+| **Settings** | Match threshold slider (0.40–0.90), liveness toggle, spoof-check toggle, default camera position, AWS endpoint input, admin PIN, danger-zone wipe. |
 
 ---
 
-## 🎯 Evaluation Criteria Mapping
+## Getting Started
 
-| Criterion | How it's addressed |
+### Prerequisites
+
+- **Node.js** 18 or higher
+- **Android Studio** (SDK 35, NDK 26.1, Build Tools 35, Java 17)
+- A **physical Android device** — Android 8.0+ (camera is unavailable on emulators)
+- USB debugging enabled on the device
+
+> **No Android Studio / USB?** Use EAS Build to compile a cloud APK and sideload it via QR:
+> ```bash
+> npm install -g eas-cli && eas login
+> # add eas.json with a preview/apk profile, then:
+> eas build --platform android --profile preview
+> ```
+
+### Install & run on Android
+
+```bash
+cd FaceAuthApp
+npm install
+
+# Terminal 1 — Metro bundler
+npm start
+
+# Terminal 2 — build and deploy to device
+npm run android
+# First build: ~8 min (NDK compilation of ONNX Runtime + Vision Camera)
+```
+
+### Run on iOS
+
+```bash
+cd FaceAuthApp/ios && pod install && cd ..
+npm run ios
+```
+
+The ONNX model is bundled as a resource in the Xcode target and loaded from the main bundle on iOS.
+
+### First launch
+
+1. Grant camera permission when prompted.
+2. Tap **Initialize System** — copies the model to app storage and runs a warm-up inference (~5 s first time).
+3. You land on the Home dashboard.
+
+---
+
+## Datalake 3.0 Integration
+
+`FaceAuthSDK` is the single public surface. Bundle the ONNX asset and call four methods:
+
+```typescript
+import { FaceAuthSDK } from './FaceAuthSDK';
+import { InferenceSession } from 'onnxruntime-react-native';
+
+// Once, at app startup
+const session = await InferenceSession.create(modelPath);
+await FaceAuthSDK.initialize(session, { threshold: 0.60, spoofEnabled: true });
+
+// Enroll a field employee (low-level: caller supplies ML Kit face bounds)
+await FaceAuthSDK.enroll(imageUri, faceBounds, 'EMP-1234');
+
+// Authenticate + log attendance in one call
+const result = await FaceAuthSDK.authenticate(imageUri, faceBounds, 'BLINK');
+if (result.success) {
+  console.log(`${result.employeeId} — ${(result.score * 100).toFixed(1)}%`);
+}
+
+// Sync pending records (also fires automatically via NetInfo listener)
+await FaceAuthSDK.syncNow();
+```
+
+See [docs/SUBMISSION.md](docs/SUBMISSION.md) §9 for the full API reference including the high-level `enrollFromPhoto` / `verifyFromPhoto` methods used by the app's own screens.
+
+---
+
+## Security
+
+- **AES-256-CBC** encryption of all face embeddings before writing to SQLite; decrypted only in memory at match time.
+- **Raw images never stored or transmitted** — only the 512-dimensional embedding vector is kept, and it is encrypted.
+- **Only attendance metadata syncs to AWS** — employee ID, timestamp, match score, liveness challenge. No biometric data leaves the device.
+- **Sync & purge** — attendance records older than 30 days are deleted locally after a successful upload.
+
+> **Production note:** the demo derives the AES key from a hardcoded constant. For deployment, derive it from **Android Keystore / iOS Secure Enclave** (see `Database.ts` for the swap point).
+
+---
+
+## Performance
+
+| Stage | Estimate |
 |---|---|
-| **Innovation** — edge AI & compression | MobileFaceNet ONNX, INT8 quantization to ~3.5 MB |
-| **Innovation** — offline liveness | Randomized challenge-response anti-spoofing |
-| **Feasibility** — Datalake integration | Drop-in `FaceAuthSDK` API |
-| **Feasibility** — speed < 1 sec | Two-stage pipeline + on-device benchmark proof |
-| **Scalability** — sync/purge | NetInfo-driven AWS sync with auto-purge |
-| **Scalability** — lighting/demographics | Adaptive gamma correction |
-| **Documentation** — clarity | This README + `CLAUDE.md` technical guide |
+| ML Kit face detection | ~120–250 ms |
+| Preprocessing (crop + resize + gamma) | ~80–200 ms |
+| ONNX inference (512-d embedding) | ~60–150 ms |
+| Database match (cosine over all enrolled) | < 5 ms |
+| **Total end-to-end** | **< 1 second ✅** |
+
+Live timing is shown in the app after each Verify — see the per-stage breakdown on the result card.
 
 ---
 
-## 🗺️ Roadmap & Known Limitations
+## Testing
 
-- [x] Add the ONNX model to the iOS Xcode bundle — **done** (registered in `project.pbxproj`)
-- [x] Passive texture anti-spoofing on top of active liveness — **done** (`SpoofDetector.ts`)
-- [x] Accuracy benchmark harness (FAR/FRR/EER) — **done** (`accuracy_benchmark.py`)
-- [x] AWS sync backend (Lambda + DynamoDB + local mock) — **done** (`aws-backend/`)
-- [x] Unit test suite for core algorithms — **done** (`__tests__/faceMath.test.ts`)
-- [ ] Wire `AWS_ENDPOINT` in `SyncService.ts` to a live API Gateway URL (or use the mock)
-- [ ] Derive AES key from device secure hardware
-- [ ] Run the accuracy harness on a labelled diverse Indian face dataset
-- [ ] Multi-angle enrollment template averaging for higher field accuracy
+```bash
+cd FaceAuthApp
+npm test      # runs __tests__/faceMath.test.ts (25 assertions)
+```
 
-> The Python scripts in the root are **research prototypes** (webcam-based) used to design the liveness algorithms now implemented in TypeScript. They do not run on-device.
+The tests cover `cosineSimilarity`, `l2Normalize`, `gammaFor`, `buildGammaLUT`, `spoofVerdict`, and the full liveness `evaluateChallenge` state machine. No native mocks — `core/faceMath.ts` imports nothing from React Native.
 
 ---
 
-## 👥 Contributors
+## AWS Backend
+
+### Local demo (no AWS account needed)
+
+```bash
+python aws-backend/mock_server.py
+# prints every batch received; replies 200 so the app marks records synced
+```
+
+Set **Settings → AWS Endpoint** to `http://<laptop-ip>:8080/attendance`.
+
+### Deploy to AWS
+
+```bash
+cd aws-backend
+npm install -g serverless
+serverless deploy --stage prod
+# paste the printed endpoint URL into Settings → AWS Endpoint
+```
+
+Creates: Lambda + API Gateway + DynamoDB (`nhai_attendance`, PK `employee_id` + SK `timestamp` — idempotent retries). See [`aws-backend/README.md`](aws-backend/README.md) for full details.
+
+---
+
+## Accuracy Benchmark
+
+```bash
+pip install onnxruntime numpy opencv-python
+
+# Pipeline smoke test (no dataset needed)
+python accuracy_benchmark.py --selftest
+
+# Full FAR / FRR / EER evaluation
+# Prepare: dataset/<person_name>/<img1.jpg> ...
+python accuracy_benchmark.py --dataset ./dataset
+```
+
+Reports accuracy, FAR, FRR, EER, genuine/impostor score separation, and single-core ONNX latency using the exact mobile preprocessing pipeline. Writes `accuracy_results.json`.
+
+---
+
+## Model Quantization (Optional)
+
+```bash
+pip install onnxruntime onnx
+python quantize_model.py   # 13.6 MB → ~3.5 MB INT8
+```
+
+Then in `context/AppContext.tsx`:
+
+```typescript
+const MODEL_NAME = 'w600k_mbf_int8.onnx';
+```
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/SUBMISSION.md`](docs/SUBMISSION.md) | Complete hackathon submission: all algorithms, API reference, security design, evaluation criteria mapping |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System architecture with Mermaid diagrams, enrollment/verify/sync flow |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Performance and accuracy target tables with instrumentation guide |
+| [`CLAUDE.md`](CLAUDE.md) | Full technical context for contributors and future development |
+
+---
+
+## Evaluation Criteria Mapping
+
+| Criterion | How it is addressed |
+|---|---|
+| **Innovation** — edge AI & compression | MobileFaceNet ONNX 13.6 MB; INT8 path to ~3.5 MB |
+| **Innovation** — offline liveness | Randomised challenge-response (BLINK / TURN) + passive texture anti-spoof |
+| **Innovation** — field accuracy | Adaptive gamma; three-axis pose enforcement; texture-gated spoof verdict for sunlight |
+| **Feasibility** — Datalake integration | Drop-in `FaceAuthSDK` — 4 methods, no UI required |
+| **Feasibility** — speed < 1 s | Two-stage pipeline; per-stage timing visible in-app |
+| **Feasibility** — no GPU / mid-range | CPU-only ONNX Runtime; tested on Snapdragon 6-series class hardware |
+| **Scalability** — sync / purge | NetInfo-driven AWS sync; idempotent DynamoDB write; 30-day auto-purge |
+| **Scalability** — growing workforce | Add users = new DB row; no retraining; cosine 1:N scan |
+| **Documentation** | This README + full `docs/` folder + `CLAUDE.md` |
+
+---
+
+## Known Limitations
+
+| Item | Status |
+|---|---|
+| AES key is hardcoded | Move to Android Keystore / iOS Secure Enclave for production |
+| AWS endpoint is a placeholder | Set it in Settings or use `mock_server.py` before demo |
+| INT8 model not bundled | `ConvInteger` not in ORT CPU kernel; static QDQ quantization is the production fix |
+| Accuracy on Indian demographics | Harness exists; run against a labelled dataset to get measured numbers |
+
+---
+
+## Contributors
 
 - **Parthmh361**
 - **9SERG4NT**
 
 ---
 
-## 📄 License
+## License
 
-Released under the **MIT License** — free to use, modify, and distribute.
+Released under the **MIT License** — free to use, modify, and distribute. See [`LICENSE`](LICENSE) for the full text and third-party license inventory.
 
 ---
 
@@ -332,6 +451,6 @@ Released under the **MIT License** — free to use, modify, and distribute.
 
 **Built for NHAI Hackathon 7.0**
 
-For queries regarding the hackathon: `pranjalgupta@nhai.org`
+Queries: `pranjalgupta@nhai.org`
 
 </div>
